@@ -85,8 +85,14 @@ namespace cppy3
 
   /** call python callable object and return result */
   typedef std::vector<Var> arguments;
-  LIB_API PyObject *call(PyObject *callable, const arguments &args = arguments());
-  LIB_API PyObject *call(const char *callable, const arguments &args = arguments());
+  // Note: no default arguments here. `arguments` is std::vector<Var> and Var is
+  // still incomplete at this point; a default `= arguments()` forces the vector
+  // destructor to instantiate against an incomplete type, which newer libc++
+  // rejects. The no-arg overloads below are defined where Var is complete.
+  LIB_API PyObject *call(PyObject *callable, const arguments &args);
+  LIB_API PyObject *call(PyObject *callable);
+  LIB_API PyObject *call(const char *callable, const arguments &args);
+  LIB_API PyObject *call(const char *callable);
 
   /** get reference to an object in python's namespace */
   LIB_API Var lookupObject(PyObject *module, const std::wstring &name);

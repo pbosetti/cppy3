@@ -550,6 +550,10 @@ namespace cppy3
     return call(lookupCallable(getMainModule(), UTF8ToWide(callable)), args);
   }
 
+  LIB_API PyObject *call(PyObject *callable) { return call(callable, arguments()); }
+
+  LIB_API PyObject *call(const char *callable) { return call(callable, arguments()); }
+
   LIB_API GILLocker::GILLocker() : _locked(false)
   {
     // autolock GIL in scoped_lock style
