@@ -4,6 +4,7 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <span>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -302,16 +303,20 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     // create numpy ndarray in C
     double cData[2] = {3.14, 42};
     // create copy
-    cppy3::NDArray<double> a(cData, 2, 1);
+    cppy3::NDArray<double> a = cppy3::NDArray<double>::copy(cData, 2, 1);
     // wrap cData without copying
-    cppy3::NDArray<double> b;
-    b.wrap(cData, 2, 1);
+    cppy3::NDArray<double> b = cppy3::NDArray<double>::wrap(cData, 2, 1);
     REQUIRE(a(1, 0) == cData[1]);
     REQUIRE(b(1, 0) == cData[1]);
 
-    // inject into python __main__ namespace
-    mainNs.dict().set_item("a", cppy3::Var::borrow(a));
-    mainNs.dict().set_item("b", cppy3::Var::borrow(b));
+    // dim1()/dim2() are 0/1-indexed now, not 1/2 (regression for bug #7)
+    REQUIRE(a.dim1() == 2);
+    REQUIRE(a.dim2() == 1);
+
+    // inject into python __main__ namespace -- NDArray now inherits Var's
+    // (already-correct) copy semantics directly, no more borrow() dance
+    mainNs.dict().set_item("a", a);
+    mainNs.dict().set_item("b", b);
     mainNs.exec("print('a: {} {}'.format(type(a), a))");
     mainNs.exec("print('b: {} {}'.format(type(b), b))");
     mainNs.exec("assert type(a) == numpy.ndarray, 'expect injected instance'");
@@ -321,6 +326,33 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     mainNs.exec("b[0] = 100500");
     REQUIRE(b(0, 0) == 100500);
     REQUIRE(cData[0] == 100500);
+
+    // out-of-range access throws Error instead of asserting (bug #19 spirit)
+    REQUIRE_THROWS_AS(a(5, 0), cppy3::Error);
+    REQUIRE_THROWS_AS(a.dim(2), cppy3::Error);
+
+    // create({...}) has no create(int,bool)/create(size_t,size_t) overload
+    // ambiguity to fall into (regression for bug #8b)
+    cppy3::NDArray<double> c = cppy3::NDArray<double>::create({3, 5});
+    REQUIRE(c.ndim() == 2);
+    REQUIRE(c.dim1() == 3);
+    REQUIRE(c.dim2() == 5);
+
+    // Var::type() reports NumpyNdarray via the is_ndarray hook, not
+    // dead #ifdef'd-out code that could never match (bug #14)
+    REQUIRE(a.type() == cppy3::Var::Type::NumpyNdarray);
+
+    // 1D wrap() must alias the caller's own buffer, not the address of a
+    // local pointer parameter inside wrap() itself (regression for v1's
+    // bug #6 -- its 1D overload passed (void*)&data, the 2D one correctly
+    // passed (void*)data; both now share one shape-span-taking
+    // implementation, so there is no separate 1D code path to regress).
+    double oneDData[4] = {10.0, 20.0, 30.0, 40.0};
+    cppy3::NDArray<double> d = cppy3::NDArray<double>::wrap(std::span(oneDData));
+    for (int i = 0; i < 4; i++)
+      REQUIRE(d(i) == oneDData[i]);
+    d(0) = 99.0;
+    REQUIRE(oneDData[0] == 99.0); // shares memory with oneDData, not a copy
   }
 #endif
 

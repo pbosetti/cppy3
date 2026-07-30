@@ -1,8 +1,8 @@
 /**
- * cppy3 -- embed python3 scripting layer into your c++ app in 10 minutes
+ * cppy3 -- embed python3 scripting layer into your c++ app in a few
+ * minutes.
  *
- * Adapters for numpy.ndarray
- *
+ * Adapters for numpy.ndarray.
  */
 
 #pragma once
@@ -26,241 +26,201 @@
 
 #include <numpy/arrayobject.h>
 
-#include <cassert>
+#include <algorithm>
+#include <initializer_list>
+#include <span>
 
-// fill with zeros by default new NDArray objects
-#define SLOWER_AND_CLEARNER false
+#include <cppy3/error.hpp>
+#include <cppy3/var.hpp>
 
 namespace cppy3
 {
-
+  // Must be called (once) before any NDArray use.
   void importNumpy();
 
-  NPY_TYPES toNumpyDType(double);
-  NPY_TYPES toNumpyDType(int);
+  // Maps a C++ element type to its numpy dtype. Specialize for your own
+  // element types the same way you'd specialize Converter<T> for
+  // Var::to<T>(); replaces v1's toNumpyDType(double)/toNumpyDType(int)
+  // overloads, which covered exactly two types and offered no way to add
+  // more without editing cppy3 itself.
+  template <typename T>
+  struct NumpyDType; // specialize per element type
 
-  /**
-   * Simple wrapper for numpy.ndarray
-   */
-  template <typename Type>
-  class NDArray
+  template <>
+  struct NumpyDType<double>
+  {
+    static constexpr NPY_TYPES value = NPY_DOUBLE;
+  };
+  template <>
+  struct NumpyDType<float>
+  {
+    static constexpr NPY_TYPES value = NPY_FLOAT;
+  };
+  template <>
+  struct NumpyDType<int>
+  {
+    static constexpr NPY_TYPES value = NPY_INT;
+  };
+  template <>
+  struct NumpyDType<long>
+  {
+    static constexpr NPY_TYPES value = NPY_LONG;
+  };
+
+  namespace detail
+  {
+    // PyArray_SetBaseObject() steals the reference it's given.
+    inline void set_ndarray_base(PyArrayObject *arr, const Var &owner)
+    {
+      if (!owner)
+        return;
+      PyObject *base = owner.get();
+      Py_INCREF(base);
+      if (PyArray_SetBaseObject(arr, base) != 0)
+        throw_if_error();
+    }
+  }
+
+  // A validating view over a numpy.ndarray with a known, fixed element type
+  // T, i.e. T must match the array's actual dtype -- this class does not
+  // convert between dtypes. Inherits Var's already-correct rule of five
+  // (copy = share the same underlying array, exactly like a Var) instead of
+  // v1's NDArray managing its own separate, ad hoc PyArrayObject* refcount
+  // (with no copy/move control at all, so it was implicitly, silently
+  // copyable while owning a raw pointer -- bug #8).
+  //
+  // Named T, not Type: Var has a nested Type enum, and inside a class
+  // template deriving from Var, an unqualified name that collides with an
+  // inherited member is resolved to that inherited member, not the
+  // enclosing template parameter -- naming this parameter Type would have
+  // silently shadowed itself with cppy3::Var::Type throughout this class.
+  template <typename T>
+  class NDArray : public Var
   {
   public:
-    NDArray() : _ndarray(NULL) {}
+    NDArray() = default;
 
-    NDArray(int n) : _ndarray(NULL)
+    explicit NDArray(Var v) : Var(std::move(v))
     {
-      create(n);
+      if (*this && !PyArray_Check(get()))
+        throw Error("expected a numpy.ndarray, got " + type_name());
     }
 
-    NDArray(int n1, int n2) : _ndarray(NULL)
+    // Creates a new, numpy-owned, uninitialized (or zero-filled) array of
+    // the given shape, e.g. NDArray<double>::create({3, 5}). A single
+    // initializer_list-of-extents parameter -- rather than separate
+    // create(int)/create(size_t,size_t) overloads as in v1 -- has no
+    // possible ambiguity with a 2-argument wrap()/copy() call (v1's
+    // NDArray(int, int) constructor was ambiguous with create(int, bool),
+    // and silently resolved to the wrong, 1D one -- bug #8b).
+    [[nodiscard]] static NDArray create(std::initializer_list<Py_ssize_t> shape, bool fill_zeros = false)
     {
-      create(n1, n2);
+      std::vector<npy_intp> dims(shape.begin(), shape.end());
+      PyObject *arr = fill_zeros
+                          ? PyArray_ZEROS(static_cast<int>(dims.size()), dims.data(), NumpyDType<T>::value, 0)
+                          : PyArray_SimpleNew(static_cast<int>(dims.size()), dims.data(), NumpyDType<T>::value);
+      if (!arr)
+        throw_if_error();
+      return NDArray(Var::steal(arr));
     }
 
-    NDArray(const Type *data, int n) : _ndarray(NULL)
+    // Deep-copies data into a new, numpy-owned array.
+    [[nodiscard]] static NDArray copy(std::span<const T> data)
     {
-      copy(data, n);
+      NDArray result = create({static_cast<Py_ssize_t>(data.size())});
+      std::copy(data.begin(), data.end(), result.data());
+      return result;
     }
 
-    NDArray(const Type *data, int n1, int n2) : _ndarray(NULL)
+    [[nodiscard]] static NDArray copy(const T *data, Py_ssize_t rows, Py_ssize_t cols)
     {
-      copy(data, n1, n2);
+      NDArray result = create({rows, cols});
+      std::copy(data, data + rows * cols, result.data());
+      return result;
     }
 
-    ~NDArray()
+    // Wraps external memory without copying -- the returned array does not
+    // own `data`. If `owner` is given, it's set as the array's base object
+    // (PyArray_SetBaseObject), so numpy keeps its own reference to it for as
+    // long as the array (or any view sliced from it) is alive; pass
+    // whatever Python-visible object actually owns `data`'s storage if
+    // that lifetime isn't otherwise guaranteed to outlive the array. With
+    // no owner, the caller remains responsible for keeping `data` alive,
+    // same as v1 (undocumented there). v1's 1D overload passed
+    // `(void*)&data` -- the address of the *local pointer parameter*, not
+    // the caller's buffer -- to PyArray_SimpleNewFromData (bug #6); the 2D
+    // overload was correct. Both go through one shape-span-taking
+    // implementation here.
+    [[nodiscard]] static NDArray wrap(std::span<T> data, Var owner = {})
     {
-      decref();
+      npy_intp dims[1] = {static_cast<npy_intp>(data.size())};
+      PyObject *arr = PyArray_SimpleNewFromData(1, dims, NumpyDType<T>::value, data.data());
+      if (!arr)
+        throw_if_error();
+      detail::set_ndarray_base(reinterpret_cast<PyArrayObject *>(arr), owner);
+      return NDArray(Var::steal(arr));
     }
 
-    /**
-     * Create 1d array of given size
-     * @param n - size of dimension
-     * @param fillZeros - initialize allocated array with zeros
-     */
-    void create(int n, bool fillZeros = SLOWER_AND_CLEARNER)
+    [[nodiscard]] static NDArray wrap(T *data, Py_ssize_t rows, Py_ssize_t cols, Var owner = {})
     {
-
-      decref();
-
-      npy_intp dim1[1];
-      dim1[0] = n;
-      Type impltype = 0;
-      if (fillZeros)
-      {
-        _ndarray = (PyArrayObject *)PyArray_ZEROS(1, dim1, toNumpyDType(impltype), 0);
-      }
-      else
-      {
-        _ndarray = (PyArrayObject *)PyArray_SimpleNew(1, dim1, toNumpyDType(impltype));
-      }
-      assert(_ndarray);
+      npy_intp dims[2] = {rows, cols};
+      PyObject *arr = PyArray_SimpleNewFromData(2, dims, NumpyDType<T>::value, data);
+      if (!arr)
+        throw_if_error();
+      detail::set_ndarray_base(reinterpret_cast<PyArrayObject *>(arr), owner);
+      return NDArray(Var::steal(arr));
     }
 
-    /**
-     * Create 2d array of given size
-     * @param n1 - rows size
-     * @param n2 - cols size
-     * @param fillZeros - initialize allocated array with zeros
-     */
-    void create(size_t n1, size_t n2, bool fillZeros = SLOWER_AND_CLEARNER)
+    [[nodiscard]] T &operator()(Py_ssize_t i) const
     {
-
-      decref();
-
-      npy_intp dim2[2];
-      dim2[0] = n1;
-      dim2[1] = n2;
-      Type impltype = 0;
-      if (fillZeros)
-      {
-        _ndarray = (PyArrayObject *)PyArray_ZEROS(2, dim2, toNumpyDType(impltype), 0);
-      }
-      else
-      {
-        _ndarray = (PyArrayObject *)PyArray_SimpleNew(2, dim2, toNumpyDType(impltype));
-      }
-      assert(_ndarray);
+      if (ndim() != 1)
+        throw Error("NDArray::operator()(i) requires a 1D array");
+      if (i < 0 || i >= dim(0))
+        throw Error("NDArray index out of range");
+      return *static_cast<T *>(PyArray_GETPTR1(arr(), i));
     }
 
-    bool isset()
+    [[nodiscard]] T &operator()(Py_ssize_t i, Py_ssize_t j) const
     {
-      return (_ndarray);
+      if (ndim() != 2)
+        throw Error("NDArray::operator()(i, j) requires a 2D array");
+      if (i < 0 || i >= dim(0) || j < 0 || j >= dim(1))
+        throw Error("NDArray index out of range");
+      return *static_cast<T *>(PyArray_GETPTR2(arr(), i, j));
     }
 
-    /**
-     * Wrap an existing 1d array, pointed to by a single Type* pointer, and wraps it in a Numpy ndarray instance
-     * @param data - points to allocated array
-     * @param n - number of elements of type Type in array
-     */
-    void wrap(Type *data, int n)
+    [[nodiscard]] int ndim() const
     {
-      npy_intp dim1[1];
-      dim1[0] = n;
-      _ndarray = (PyArrayObject *)PyArray_SimpleNewFromData(1, dim1, toNumpyDType(*data), (void *)&data);
+      if (!*this)
+        throw Error("cannot get ndim() of an empty NDArray");
+      return PyArray_NDIM(arr());
     }
 
-    /**
-     * Wrap an existing 2d array, pointed to by a single Type* pointer, and wraps it in a Numpy ndarray instance
-     * @param data - points to allocated array
-     * @param[in] n1 - number of elements of type Type in array's row
-     * @param[in] n2 - number of elements of type Type in array's column
-     * @param[in] data - array data
-     */
-    void wrap(Type *data, int n1, int n2)
+    // 0-indexed, unlike v1's dim(), which took a 0-indexed argument
+    // internally but was called exclusively via dim1()/dim2() forwarding
+    // to dim(1)/dim(2) -- both off by one (bug #7): dim1() returned the
+    // *second* extent, and dim2() read past the array's own dimension
+    // count, tripping an assert (or reading OOB under NDEBUG).
+    [[nodiscard]] Py_ssize_t dim(int n) const
     {
-      npy_intp dim2[2];
-      dim2[0] = n1;
-      dim2[1] = n2;
-      _ndarray = (PyArrayObject *)PyArray_SimpleNewFromData(2, dim2, toNumpyDType(*data), (void *)data);
+      if (!*this)
+        throw Error("cannot get dim() of an empty NDArray");
+      if (n < 0 || n >= PyArray_NDIM(arr()))
+        throw Error("NDArray dimension index out of range");
+      return PyArray_DIM(arr(), n);
     }
 
-    /**
-     * Create a Numpy ndarray copy of data
-     * @param data - 1d array
-     * @param n - size
-     */
-    void copy(const Type *data, int n)
-    {
-      create(n, false);
+    [[nodiscard]] Py_ssize_t dim1() const { return dim(0); }
+    [[nodiscard]] Py_ssize_t dim2() const { return dim(1); }
 
-      for (int i = 0; i < n; i++)
-      {
-        *(Type *)(PyArray_GETPTR1(_ndarray, i)) = data[i];
-      }
-    }
-
-    /**
-     * Create a Numpy ndarray copy of data
-     * @param[in] data - 2d array data
-     * @param[in] n1 - rows count
-     * @param[in] n2 - columns count
-     */
-    void copy(const Type *data, size_t n1, size_t n2)
+    [[nodiscard]] T *data() const
     {
-      create(n1, n2, false);
-      for (size_t r = 0; r < n1; ++r)
-      {
-        size_t rowOffset = r * n2;
-        for (size_t c = 0; c < n2; ++c)
-        {
-          *(Type *)PyArray_GETPTR2(_ndarray, r, c) = data[rowOffset + c];
-        }
-      }
-    }
-
-    Type &operator()(int i)
-    {
-      assert(_ndarray);
-      assert(PyArray_NDIM(_ndarray) == 1 && i >= 0 && i < PyArray_DIM(_ndarray, 0));
-      return *((Type *)PyArray_GETPTR1(_ndarray, i));
-    }
-
-    Type &operator()(int i, int j)
-    {
-      assert(_ndarray);
-      assert(PyArray_NDIM(_ndarray) == 2);
-      assert(i >= 0 && i < PyArray_DIM(_ndarray, 0));
-      assert(j >= 0 && j < PyArray_DIM(_ndarray, 1));
-      return *((Type *)PyArray_GETPTR2(_ndarray, i, j));
-    }
-
-    operator PyObject *()
-    {
-      assert(_ndarray);
-      return (PyObject *)_ndarray;
-    }
-    operator PyArrayObject *()
-    {
-      assert(_ndarray);
-      return _ndarray;
-    }
-
-    /**
-     * @return number of dimensions
-     */
-    int nd() const
-    {
-      assert(_ndarray);
-      return PyArray_NDIM(_ndarray);
-    }
-
-    /**
-     * @return size of dimension n
-     */
-    int dim(size_t n) const
-    {
-      assert(_ndarray);
-      assert(PyArray_NDIM(_ndarray) > n);
-      return PyArray_DIM(_ndarray, n);
-    }
-
-    int dim1() const
-    {
-      return dim(1);
-    }
-
-    int dim2() const
-    {
-      return dim(2);
-    }
-
-    /**
-     * @return raw pointer to data array
-     */
-    Type *getData()
-    {
-      assert(_ndarray);
-      return PyArray_DATA(_ndarray);
+      if (!*this)
+        throw Error("cannot get data() of an empty NDArray");
+      return static_cast<T *>(PyArray_DATA(arr()));
     }
 
   private:
-    PyArrayObject *_ndarray;
-
-    void decref()
-    {
-      Py_XDECREF(_ndarray);
-    }
+    PyArrayObject *arr() const { return reinterpret_cast<PyArrayObject *>(get()); }
   };
-
 }

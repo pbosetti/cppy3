@@ -15,7 +15,11 @@ namespace cppy3
       }
       return std::string(data, static_cast<size_t>(size));
     }
+
+    IsNdarrayHook g_isNdarrayHook = nullptr;
   }
+
+  void register_is_ndarray_hook(IsNdarrayHook hook) noexcept { g_isNdarrayHook = hook; }
 
   Var::Var(const Var &other) noexcept : _o(other._o)
   {
@@ -209,6 +213,8 @@ namespace cppy3
       return Type::Dict;
     if (PyList_Check(_o))
       return Type::List;
+    if (g_isNdarrayHook && g_isNdarrayHook(_o))
+      return Type::NumpyNdarray;
     if (PyModule_Check(_o))
       return Type::Module;
     return Type::Other;

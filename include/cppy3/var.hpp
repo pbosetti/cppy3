@@ -18,12 +18,22 @@ namespace cppy3
   // type, and convert.hpp is where to_var()/Converter<T> already live).
   class Kwargs;
 
+  // Lets Var::type() report Type::NumpyNdarray without var.cpp itself
+  // depending on numpy headers: cppy3_numpy.cpp registers this hook (via
+  // importNumpy()) only when NumPy support is actually compiled in and
+  // initialized. Superseds v1's approach, which checked
+  // `#ifdef NPY_NDARRAYOBJECT_H` in var's own translation unit -- a macro
+  // that TU never defined, so the branch was permanently dead regardless of
+  // whether NumPy support was built (bug #14).
+  using IsNdarrayHook = bool (*)(PyObject *);
+  LIB_API void register_is_ndarray_hook(IsNdarrayHook hook) noexcept;
+
   // A reference-counted, RAII-managed PyObject* holder -- the core value
   // type of cppy3. Every Python object that crosses into C++ is a Var.
   //
   // Requires the GIL to be held for construction/destruction/copying, same
   // as any other CPython C API call; cppy3 does not acquire it implicitly
-  // per-object (see GilLock/PythonVM for coarser-grained GIL management).
+  // per-object (see GilLock/Interpreter for coarser-grained GIL management).
   //
   // Fixes v1's Var bugs: a correct copy-assignment operator (v1 declared a
   // copy ctor and dtor but no operator=, so the compiler-generated one
