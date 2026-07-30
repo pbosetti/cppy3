@@ -1,8 +1,8 @@
 
-#include "cppy3.hpp"
+#include <cppy3/cppy3.hpp>
 
 #define INCLUDED_FROM_CPPY3_NUMPY_CPP
-#include "cppy3_numpy.hpp"
+#include <cppy3/cppy3_numpy.hpp>
 #undef INCLUDED_FROM_CPPY3_NUMPY_CPP
 
 namespace cppy3

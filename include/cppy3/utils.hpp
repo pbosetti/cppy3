@@ -1,24 +1,14 @@
 #pragma once
 
 #include <string>
-#include <locale>
 
-#ifdef CPPY3_USE_BOOST_CONVERT
-    #include <boost/locale/encoding_utf.hpp>
-#else
-    #include <codecvt>
-#endif
-
-#ifndef _NDEBUG
- #define DLOG(MSG) {std::cerr<<MSG<<std::endl;}
- #define DWLOG(MSG) {std::wcerr<<MSG<<std::endl;}
-#else
- #define DLOG(MSG) {}
- #define DWLOG(MSG) {}
-#endif
-
-namespace cppy3 
+namespace cppy3
 {
-    std::wstring UTF8ToWide(const std::string& text);
-    std::string WideToUTF8(const std::wstring& text);
+  // Locale-independent UTF-8 <-> platform wchar_t conversion (UTF-16 on
+  // Windows, UTF-32 elsewhere -- selected automatically from sizeof(wchar_t)).
+  // Never consults the process locale (the previous mbstowcs/wcstombs-based
+  // implementation depended on LC_CTYPE and silently mis-converted or
+  // overflowed its output buffer under "C" locale or on astral codepoints).
+  [[nodiscard]] std::wstring UTF8ToWide(const std::string &text);
+  [[nodiscard]] std::string WideToUTF8(const std::wstring &text);
 }

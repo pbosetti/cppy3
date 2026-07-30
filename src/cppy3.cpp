@@ -1,4 +1,4 @@
-#include "cppy3.hpp"
+#include <cppy3/cppy3.hpp>
 
 #include <cassert>
 #include <cstdlib>
@@ -7,7 +7,7 @@
 #include <fstream>
 #include <streambuf>
 
-#include "utils.hpp"
+#include <cppy3/utils.hpp>
 
 #ifdef _WIN32
 int setenv(const char *name, const char *value, int overwrite)

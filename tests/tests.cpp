@@ -1,5 +1,4 @@
 #include <iostream>
-#include <clocale>
 #include <thread>
 
 #include <cppy3/cppy3.hpp>
@@ -7,8 +6,7 @@
 #include <cppy3/cppy3_numpy.hpp>
 #endif
 
-#define CATCH_CONFIG_MAIN
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #ifndef TEST_UNICODE_CONVERTERS
 #define TEST_UNICODE_CONVERTERS 1
@@ -18,30 +16,30 @@
 TEST_CASE( "Utils", "" ) {
 #if TEST_UNICODE_CONVERTERS
   SECTION( "unicode converters" ) {
+    // Deliberately no setlocale()/std::locale::global() here: UTF8ToWide and
+    // WideToUTF8 are locale-independent hand-rolled codecs (see plan bug #5)
+    // and must round-trip correctly under the default "C" locale too -- the
+    // v1 implementation only passed this test because it forced en_US.UTF-8.
     const std::string utf8Str("зачем вы посетили нас в глуши забытого селенья");
     const std::wstring unicodeStr(L"зачем вы посетили нас в глуши забытого селенья");
 
-#if 1
-    constexpr char locale_name[] = "en_US.UTF-8";
-    setlocale( LC_ALL, locale_name );
-    std::locale::global(std::locale(locale_name));
-    std::wcin.imbue(std::locale());
-    std::wcout.imbue(std::locale());
-    std::ios_base::sync_with_stdio(false);
-#else
-#include <codecvt>
-    std::ios_base::sync_with_stdio(false);
-    std::locale utf8(std::locale(), new std::codecvt_utf8<wchar_t>);
-    std::wcout.imbue(utf8);
-#endif
-    std::cout << utf8Str << std::endl;
-    std::cout << "Unicode->UTF8:" << cppy3::WideToUTF8(unicodeStr) << std::endl;
-
-    std::wcout << unicodeStr << std::endl;
-    std::wcout << "UTF8->Unicode:" << cppy3::UTF8ToWide(utf8Str) << std::endl;
-
     REQUIRE(cppy3::WideToUTF8(unicodeStr) == utf8Str);
     REQUIRE(cppy3::UTF8ToWide(utf8Str) == unicodeStr);
+
+    // CJK: 3-byte UTF-8 sequences.
+    const std::string cjkUtf8("日本語のテスト");
+    const std::wstring cjkWide(L"日本語のテスト");
+    REQUIRE(cppy3::WideToUTF8(cjkWide) == cjkUtf8);
+    REQUIRE(cppy3::UTF8ToWide(cjkUtf8) == cjkWide);
+
+    // Astral codepoints (4-byte UTF-8; surrogate pairs on platforms where
+    // wchar_t is UTF-16). \U escapes denote the Unicode scalar value
+    // directly regardless of source encoding. This is exactly the path
+    // bug #5's WideToUTF8 heap-buffer-overflowed on.
+    const std::wstring emojiWide(L"\U0001F600\U0001F601\U0001F602");
+    const std::string emojiUtf8 = cppy3::WideToUTF8(emojiWide);
+    REQUIRE(emojiUtf8.size() == 12); // 3 codepoints x 4 UTF-8 bytes each
+    REQUIRE(cppy3::UTF8ToWide(emojiUtf8) == emojiWide);
   }
 #endif
 }
@@ -193,4 +191,55 @@ t.start()
     }
   }
 
+  SECTION("cppy3::Error / throw_if_error() (v2, not yet wired into exec/eval)") {
+    PyObject *mainDict = cppy3::getMainDict();
+
+    SECTION("simple exception") {
+      PyObject *result = PyRun_String("raise ValueError('boom')", Py_file_input, mainDict, mainDict);
+      REQUIRE(result == nullptr);
+
+      try {
+        cppy3::throw_if_error();
+        REQUIRE(false); // unreachable
+      } catch (const cppy3::Error &e) {
+        REQUIRE(e.type_name() == "ValueError");
+        REQUIRE(e.message() == "boom");
+        REQUIRE(e.traceback().size() > 0);
+        REQUIRE(e.cause() == nullptr);
+      }
+      // exception has been fetched and cleared
+      REQUIRE(!cppy3::error());
+    }
+
+    SECTION("chained exception (__cause__)") {
+      PyObject *result = PyRun_String(
+          "try:\n"
+          "  raise RuntimeError('root cause')\n"
+          "except RuntimeError as e:\n"
+          "  raise ValueError('boom') from e\n",
+          Py_file_input, mainDict, mainDict);
+      REQUIRE(result == nullptr);
+
+      try {
+        cppy3::throw_if_error();
+        REQUIRE(false); // unreachable
+      } catch (const cppy3::Error &e) {
+        REQUIRE(e.type_name() == "ValueError");
+        REQUIRE(e.message() == "boom");
+        REQUIRE(e.cause() != nullptr);
+        REQUIRE(e.cause()->type_name() == "RuntimeError");
+        REQUIRE(e.cause()->message() == "root cause");
+
+        const std::string formatted = e.format();
+        REQUIRE(formatted.find("ValueError: boom") != std::string::npos);
+        REQUIRE(formatted.find("RuntimeError: root cause") != std::string::npos);
+
+        // copy must deep-copy the cause chain, not alias it
+        cppy3::Error copy = e;
+        REQUIRE(copy.cause() != nullptr);
+        REQUIRE(copy.cause() != e.cause());
+        REQUIRE(copy.cause()->message() == "root cause");
+      }
+    }
+  }
 }

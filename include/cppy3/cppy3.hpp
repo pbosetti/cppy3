@@ -25,6 +25,7 @@
 
 #include "libdefs.hpp"
 #include "utils.hpp"
+#include "error.hpp"
 
 namespace cppy3
 {
@@ -159,7 +160,6 @@ namespace cppy3
    */
   LIB_API PyObject *convert(const char *value);
   LIB_API PyObject *convert(const std::wstring &value);
-  LIB_API PyObject *convert(const std::wstring &value);
   LIB_API PyObject *convert(const int &value);
   LIB_API PyObject *convert(const double &value);
 
@@ -178,30 +178,6 @@ namespace cppy3
     }
     return o;
   }
-
-#if HAVE_MATRIX_CONTAINER
-  template <typename T>
-  PyObject *varCreator(const Matrix<T> &value)
-  {
-    PyObject *o = PyList_New(value.rows());
-    assert(o);
-
-    for (size_t r = 0; r < value.rows(); ++r)
-    {
-      PyObject *row = PyList_New(value.rows());
-      int res = PyList_SetItem(o, r, row);
-      assert(res == 0);
-
-      for (size_t c = 0; c < value.cols(); ++c)
-      {
-        PyObject *item = varCreator(value[r][c]);
-        int r = PyList_SetItem(row, c, item);
-        assert(r == 0);
-      }
-    }
-    return o;
-  }
-#endif
 
   LIB_API void extract(PyObject *o, std::wstring &value);
   LIB_API void extract(PyObject *o, long &value);
@@ -229,54 +205,6 @@ namespace cppy3
       throw PythonException(L"variable is not a list");
     }
   }
-
-#if HAVE_MATRIX_CONTAINER
-  template <typename T>
-  void varGetter(PyObject *o, Matrix<T> &value)
-  {
-    assert(o);
-    value.reset(0, 0);
-
-    if (!PyList_Check(o))
-    {
-      throw PythonException(L"getMatrix(): variable is not a list");
-    }
-
-    if (PyList_Size(o) == 0)
-    {
-      value.reset(0, 0);
-      return;
-    }
-
-    PyObject *row = PyList_GetItem(o, 0);
-    assert(row);
-    int rowSize = PyList_Size(o);
-    int colSize = PyList_Size(row);
-    value.reset(rowSize, colSize);
-
-    for (int r = 0; r < rowSize; r++)
-    {
-      row = PyList_GetItem(o, r);
-      if (!PyList_Check(row))
-      {
-        throw PyException("getMatrix(): list item is not a list");
-      }
-
-      if (colSize != PyList_Size(row))
-      {
-        throw PyException("getMatrix(): matrix rows have different size");
-      }
-
-      for (int c = 0; c < colSize; c++)
-      {
-        PyObject *item = PyList_GetItem(row, c);
-        T itemValue;
-        varGetter(item, itemValue);
-        value[r][c] = itemValue;
-      }
-    }
-  }
-#endif
 
   /**
    * In python everything is a variable object instance.
@@ -519,16 +447,6 @@ namespace cppy3
       assert(o);
       extract(o, value);
     }
-
-#if HAVE_MATRIX_CONTAINER
-    template <typename T>
-    void getMatrix(const std::wstring &varName, Matrix<T> &value) const
-    {
-      PyObject *o = PyDict_GetItemString(*this, WideToUTF8(varName).data());
-      assert(o);
-      varGetter(o, value);
-    }
-#endif
 
     /**
      * Get text representation. Equal to python str() or repr()

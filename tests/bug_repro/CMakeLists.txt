@@ -5,19 +5,9 @@
 #
 # Usage: cmake --build . --target bug01_var_copy_assign && ./tests/bug_repro/bug01_var_copy_assign
 
-include_directories(${PROJECT_SOURCE_DIR})
-if(Python3_NumPy_FOUND)
-    include_directories(${Python3_NumPy_INCLUDE_DIRS})
-endif()
-
 function(add_bug_repro name)
     add_executable(${name} ${name}.cpp)
-    target_link_libraries(${name} cppy3)
-    if(Python3_NumPy_FOUND AND WIN32)
-        target_link_libraries(${name} "${Python3_NumPy_INCLUDE_DIRS}/../lib/npymath.lib")
-    elseif(Python3_NumPy_FOUND)
-        target_link_libraries(${name} "${Python3_NumPy_INCLUDE_DIRS}/../lib/libnpymath.a")
-    endif()
+    target_link_libraries(${name} PRIVATE cppy3::cppy3)
 endfunction()
 
 add_bug_repro(bug01_var_copy_assign)
@@ -31,4 +21,4 @@ add_bug_repro(bug11_injectvar_leak)
 # EXCLUDE_FROM_ALL: this target is expected to FAIL TO COMPILE (see the file
 # for why) and must never be built by a plain `cmake --build .`.
 add_executable(bug13_getlist_does_not_compile EXCLUDE_FROM_ALL bug13_getlist_does_not_compile.cpp)
-target_link_libraries(bug13_getlist_does_not_compile cppy3)
+target_link_libraries(bug13_getlist_does_not_compile PRIVATE cppy3::cppy3)

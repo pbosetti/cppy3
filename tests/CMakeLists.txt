@@ -1,21 +1,21 @@
+include(FetchContent)
+FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG v3.7.1
+)
+FetchContent_MakeAvailable(Catch2)
+list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+
 add_executable(tests tests.cpp)
-target_link_libraries(tests cppy3)
-include_directories(${PROJECT_SOURCE_DIR})
+target_link_libraries(tests PRIVATE cppy3::cppy3 Catch2::Catch2WithMain)
 
 option(CPPY3_TEST_UNICODE_CONVERTERS "Test for proper working of Unicode conversion utilities" ON)
-
 if(CPPY3_TEST_UNICODE_CONVERTERS)
-    add_definitions(-DTEST_UNICODE_CONVERTERS)
+    target_compile_definitions(tests PRIVATE TEST_UNICODE_CONVERTERS)
 else()
-    add_definitions(-DTEST_UNICODE_CONVERTERS=0)
+    target_compile_definitions(tests PRIVATE TEST_UNICODE_CONVERTERS=0)
 endif()
 
-if(Python3_NumPy_FOUND)
-    include_directories(${Python3_NumPy_INCLUDE_DIRS})
-    if(WIN32)
-        set(NUMPY_LIB "${Python3_NumPy_INCLUDE_DIRS}/../lib/npymath.lib")
-    else()
-        set(NUMPY_LIB "${Python3_NumPy_INCLUDE_DIRS}/../lib/libnpymath.a")
-    endif()
-    target_link_libraries(tests ${NUMPY_LIB})
-endif()
+include(Catch)
+catch_discover_tests(tests)
