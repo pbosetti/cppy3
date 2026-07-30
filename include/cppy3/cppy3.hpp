@@ -14,10 +14,11 @@
  * - Interpreter/Namespace: interpreter lifecycle (PyConfig-based) and
  *   isolated namespaces to exec()/eval() code in.
  * - GilLock/GilRelease: scoped GIL management.
+ * - make_function(): exposes a C++ callable as a Python callable.
  *
  * This is the single header most consumers need; each piece above also
  * has its own header (var.hpp, convert.hpp, error.hpp, interpreter.hpp,
- * gil.hpp) if you want to include only what you use.
+ * gil.hpp, function.hpp) if you want to include only what you use.
  */
 #pragma once
 
@@ -28,3 +29,4 @@
 #include "convert.hpp"
 #include "gil.hpp"
 #include "interpreter.hpp"
+#include "function.hpp"

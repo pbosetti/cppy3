@@ -197,6 +197,42 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     REQUIRE(!cppy3::error()); // and the interpreter's error state was consumed
   }
 
+  SECTION("make_function() exposes a C++ callable to Python (bug #36)") {
+    // a plain function pointer
+    mainNs.set("cpp_add", cppy3::make_function("cpp_add", +[](long a, long b) -> long { return a + b; }));
+    REQUIRE(mainNs.eval("cpp_add(2, 3)").to<long>() == 5);
+    mainNs.exec("assert cpp_add(2, 3) == 5"); // callable from Python source too, not just eval()
+
+    // a capturing lambda
+    int calls = 0;
+    mainNs.set("cpp_greet",
+               cppy3::make_function("cpp_greet", [&calls](std::string name) -> std::string {
+                 calls++;
+                 return "Hello, " + name + "!";
+               }));
+    REQUIRE(mainNs.eval("cpp_greet('World')").str() == "Hello, World!");
+    REQUIRE(calls == 1);
+
+    // void return -> None
+    mainNs.set("cpp_noop", cppy3::make_function("cpp_noop", []() -> void {}));
+    REQUIRE(mainNs.eval("cpp_noop()").is_none());
+
+    // wrong arity raises TypeError, not a crash
+    REQUIRE_THROWS_AS(mainNs.eval("cpp_add(1)"), cppy3::Error);
+    try {
+      mainNs.eval("cpp_add(1)");
+      REQUIRE(false);
+    } catch (const cppy3::Error &e) {
+      REQUIRE(e.type_name() == "TypeError");
+    }
+
+    // a C++ exception thrown during the call surfaces as a Python exception
+    mainNs.set("cpp_throws", cppy3::make_function("cpp_throws", []() -> long {
+                  throw std::runtime_error("boom from C++");
+                }));
+    REQUIRE_THROWS_AS(mainNs.eval("cpp_throws()"), cppy3::Error);
+  }
+
   // The v1 audit (see the plan's Phase 0 bug_repro/ diagnostics, preserved
   // in git history) found three refcount/leak bugs reachable through the
   // old Var API: a broken copy-assignment operator (#1), call() silently
