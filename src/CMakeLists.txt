@@ -1,6 +1,6 @@
 include(GenerateExportHeader)
 
-add_library(cppy3 cppy3.cpp utils.cpp error.cpp var.cpp)
+add_library(cppy3 utils.cpp error.cpp var.cpp gil.cpp interpreter.cpp)
 add_library(cppy3::cppy3 ALIAS cppy3)
 
 set_target_properties(cppy3 PROPERTIES

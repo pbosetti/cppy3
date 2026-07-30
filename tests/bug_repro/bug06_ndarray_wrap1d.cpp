@@ -12,7 +12,7 @@
 // (an ASan stack-buffer-overflow).
 int main()
 {
-  cppy3::PythonVM vm;
+  cppy3::Interpreter interpreter;
   cppy3::importNumpy();
 
   double cData[4] = {10.0, 20.0, 30.0, 40.0};

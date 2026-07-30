@@ -83,19 +83,21 @@ namespace cppy3
     // Attribute access (obj.name). Throws Error if absent or *this is empty.
     [[nodiscard]] Var attr(std::string_view name) const;
     [[nodiscard]] bool has_attr(std::string_view name) const noexcept;
-    void set_attr(std::string_view name, const Var &value);
+    // const: like a pointer/shared_ptr, Var's constness governs the handle
+    // (_o) itself, not the mutability of the Python object it refers to.
+    void set_attr(std::string_view name, const Var &value) const;
 
     // Mapping access (obj[key]) for dict-likes and any object implementing
     // the mapping protocol with string keys. Throws Error if *this is not
     // a mapping or the key is absent.
     [[nodiscard]] Var operator[](std::string_view key) const;
-    void set_item(std::string_view key, const Var &value);
+    void set_item(std::string_view key, const Var &value) const;
 
     // Sequence access (obj[index]) for list/tuple/any sequence. Negative
     // indices follow Python semantics (count from the end). Throws Error
     // if *this is not a sequence or the index is out of range.
     [[nodiscard]] Var operator[](Py_ssize_t index) const;
-    void set_item(Py_ssize_t index, const Var &value);
+    void set_item(Py_ssize_t index, const Var &value) const;
 
     // Size of a sequence, mapping, or anything else PyObject_Size() accepts.
     [[nodiscard]] Py_ssize_t size() const;
@@ -196,9 +198,9 @@ namespace cppy3
     explicit List(Var v);
     [[nodiscard]] static List create(Py_ssize_t n = 0);
 
-    void append(const Var &value);
-    void insert(Py_ssize_t index, const Var &value);
-    void remove(Py_ssize_t index);
+    void append(const Var &value) const;
+    void insert(Py_ssize_t index, const Var &value) const;
+    void remove(Py_ssize_t index) const;
     [[nodiscard]] bool contains(const Var &value) const;
   };
 
@@ -211,6 +213,6 @@ namespace cppy3
     [[nodiscard]] static Dict create();
 
     [[nodiscard]] bool contains(std::string_view key) const;
-    void clear();
+    void clear() const;
   };
 }

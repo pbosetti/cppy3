@@ -19,7 +19,7 @@ namespace cppy3
       // @todo double-lock-singleton pattern against multithreaded race condition
       imported = true;
       wrap_import_array();
-      rethrowPythonException();
+      throw_if_error();
     }
   }
 

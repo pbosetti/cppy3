@@ -1,4 +1,6 @@
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -17,6 +19,27 @@
 #define TEST_UNICODE_CONVERTERS 1
 #endif
 
+namespace
+{
+  // A minimal custom C extension module, registered via
+  // Config::builtin_modules, mirroring examples/console.cpp's "emb" module.
+  PyObject *test_ext_double_it(PyObject *, PyObject *arg)
+  {
+    const long v = PyLong_AsLong(arg);
+    return PyLong_FromLong(v * 2);
+  }
+
+  PyMethodDef test_ext_methods[] = {
+      {"double_it", test_ext_double_it, METH_O, nullptr},
+      {nullptr, nullptr, 0, nullptr},
+  };
+
+  PyModuleDef test_ext_module = {
+      PyModuleDef_HEAD_INIT, "test_ext", nullptr, -1, test_ext_methods,
+  };
+
+  PyObject *PyInit_test_ext() { return PyModule_Create(&test_ext_module); }
+}
 
 TEST_CASE( "Utils", "" ) {
 #if TEST_UNICODE_CONVERTERS
@@ -50,23 +73,23 @@ TEST_CASE( "Utils", "" ) {
 }
 
 TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
-  // create interpreter
-  cppy3::PythonVM instance;
+  // create interpreter and get the __main__ namespace, the closest
+  // equivalent to where v1's free exec()/eval() always ran
+  cppy3::Interpreter interpreter;
+  cppy3::Namespace mainNs = interpreter.main();
 
   // v1's Main/injectVar<T>()/getVar<T>() are gone -- Var now handles data
   // access through attr()/operator[]/str()/type()/iteration, and value
   // conversion through to_var()/Var::to<T>()/try_to<T>() (Converter<T>).
   SECTION("c++ -> python -> c++ variable access (Var attr/[]/str/type/iteration/to<T>)") {
-    cppy3::Var mainNs = cppy3::Var::borrow(cppy3::getMainDict());
-
-    // inject C++ -> python via to_var() + Var::set_item()
-    mainNs.set_item("a", cppy3::to_var(2));
-    mainNs.set_item("b", cppy3::to_var(2));
-    cppy3::exec("assert a + b == 4");
-    cppy3::exec("print('sum is', a + b)");
+    // inject C++ -> python via Namespace::set<T>()
+    mainNs.set("a", 2);
+    mainNs.set("b", 2);
+    mainNs.exec("assert a + b == 4");
+    mainNs.exec("print('sum is', a + b)");
 
     // extract python -> C++
-    const cppy3::Var sum = cppy3::eval("a + b");
+    const cppy3::Var sum = mainNs.eval("a + b");
     REQUIRE(sum.type() == cppy3::Var::Type::Long);
     REQUIRE(sum.str() == "4");
     REQUIRE(sum.to<long>() == 4);
@@ -77,45 +100,44 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     REQUIRE(sum.to<double>() == 4.0);
 
     // python var assign name from c++ -> python
-    mainNs.set_item("sum_var", sum);
-    cppy3::exec("assert sum_var == 4");
+    mainNs.set("sum_var", sum);
+    mainNs.exec("assert sum_var == 4");
 
-    // cast to float in python, read back via Var::to<double>()
-    cppy3::eval("sum_var = float(sum_var)");
-    const cppy3::Var sumVar = mainNs["sum_var"];
-    REQUIRE(sumVar.type() == cppy3::Var::Type::Float);
-    REQUIRE(std::abs(sumVar.to<double>() - 4.0) < 1e-10);
+    // cast to float in python, read back via Namespace::get<double>()
+    mainNs.eval("sum_var = float(sum_var)");
+    REQUIRE(std::abs(mainNs.get<double>("sum_var") - 4.0) < 1e-10);
+    REQUIRE(mainNs.dict()["sum_var"].type() == cppy3::Var::Type::Float);
 
     // a type mismatch throws via to<T>(), and is reported via try_to<T>()
     // instead of throwing
-    REQUIRE_THROWS_AS(sumVar.to<std::vector<int>>(), cppy3::Error);
-    REQUIRE(!sumVar.try_to<std::vector<int>>().has_value());
+    REQUIRE_THROWS_AS(mainNs.get<std::vector<int>>("sum_var"), cppy3::Error);
+    REQUIRE(!mainNs.dict()["sum_var"].try_to<std::vector<int>>().has_value());
     REQUIRE(sum.try_to<long>().value() == 4);
 
     // unicode strings round-trip via exec/eval; Var::str()/to<string>() are
     // UTF-8 native
     const std::wstring unicodeStr = L"юникод smile ☺";
-    cppy3::exec(L"uu = '" + unicodeStr + L"'");
-    const cppy3::Var uVar = cppy3::eval("uu");
+    mainNs.exec("uu = '" + cppy3::WideToUTF8(unicodeStr) + "'");
+    const cppy3::Var uVar = mainNs.eval("uu");
     REQUIRE(uVar.str() == cppy3::WideToUTF8(unicodeStr));
     REQUIRE(uVar.to<std::wstring>() == unicodeStr);
 
     // unicode string inject / extract via Converter<T>, not just exec/eval
-    mainNs.set_item("uVar2", cppy3::to_var(unicodeStr));
-    cppy3::exec("print('uVar2:', uVar2)");
-    REQUIRE(mainNs["uVar2"].to<std::wstring>() == unicodeStr);
+    mainNs.set("uVar2", unicodeStr);
+    mainNs.exec("print('uVar2:', uVar2)");
+    REQUIRE(mainNs.get<std::wstring>("uVar2") == unicodeStr);
 
     // attribute access on an arbitrary object
-    cppy3::exec("class Point:\n  def __init__(self):\n    self.x = 3\npt = Point()");
-    const cppy3::Var pt = mainNs["pt"];
+    mainNs.exec("class Point:\n  def __init__(self):\n    self.x = 3\npt = Point()");
+    const cppy3::Var pt = mainNs.dict()["pt"];
     REQUIRE(pt.attr("x").str() == "3");
     REQUIRE(pt.has_attr("x"));
     REQUIRE(!pt.has_attr("y"));
 
     // iteration over an arbitrary Python iterable (PyObject_GetIter-based,
     // not list-specific)
-    cppy3::exec("seq = [10, 20, 30]");
-    const cppy3::Var seq = mainNs["seq"];
+    mainNs.exec("seq = [10, 20, 30]");
+    const cppy3::Var seq = mainNs.dict()["seq"];
     std::vector<std::string> seen;
     for (const cppy3::Var &item : seq)
       seen.push_back(item.str());
@@ -146,24 +168,22 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
   }
 
   SECTION("Var::operator()/call_kw/method") {
-    cppy3::Var mainNs = cppy3::Var::borrow(cppy3::getMainDict());
+    mainNs.exec("def add(a, b): return a + b");
+    REQUIRE(mainNs.dict()["add"](2, 3).to<long>() == 5);
 
-    cppy3::exec("def add(a, b): return a + b");
-    REQUIRE(mainNs["add"](2, 3).to<long>() == 5);
-
-    cppy3::exec("def greet(name, greeting='Hello'): return f'{greeting}, {name}!'");
-    const cppy3::Var greet = mainNs["greet"];
+    mainNs.exec("def greet(name, greeting='Hello'): return f'{greeting}, {name}!'");
+    const cppy3::Var greet = mainNs.dict()["greet"];
     REQUIRE(greet("World").str() == "Hello, World!");
     REQUIRE(greet.call_kw({{"greeting", cppy3::to_var("Hi")}}, "World").str() == "Hi, World!");
 
-    cppy3::exec(
+    mainNs.exec(
         "class Counter:\n"
         "  def __init__(self):\n"
         "    self.n = 0\n"
         "  def add(self, x):\n"
         "    self.n += x\n"
         "    return self.n\n");
-    const cppy3::Var counter = mainNs["Counter"]();
+    const cppy3::Var counter = mainNs.dict()["Counter"]();
     REQUIRE(counter.method("add", 3).to<long>() == 3);
     REQUIRE(counter.method("add", 4).to<long>() == 7);
 
@@ -171,8 +191,8 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     REQUIRE_THROWS_AS(cppy3::to_var(42)(), cppy3::Error);
 
     // a Python-side exception raised during the call propagates
-    cppy3::exec("def boom(): raise ValueError('kaboom')");
-    REQUIRE_THROWS_AS(mainNs["boom"](), cppy3::Error);
+    mainNs.exec("def boom(): raise ValueError('kaboom')");
+    REQUIRE_THROWS_AS(mainNs.dict()["boom"](), cppy3::Error);
     REQUIRE(!cppy3::error()); // and the interpreter's error state was consumed
   }
 
@@ -183,7 +203,7 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
   // PyObject_Str() result every call (#9). That API no longer exists (Var
   // was redesigned, not patched in place), so those repro scripts can't
   // even compile anymore -- these sections are their replacement: proving
-  // the equivalent properties hold for the current Var/call()/str().
+  // the equivalent properties hold for the current Var/operator()/str().
   SECTION("Var copy-assignment does not corrupt refcounts (regression for v1 bug #1)") {
     // must be outside CPython's immortal small-int cache (-5..256), else
     // Py_INCREF/DECREF are no-ops and the check is vacuous.
@@ -200,17 +220,15 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     REQUIRE(Py_REFCNT(obj) == before);
   }
 
-  SECTION("call() does not corrupt argument refcounts (regression for v1 bug #2)") {
-    cppy3::exec("def identity(x): return x");
+  SECTION("Var::operator() does not corrupt argument refcounts (regression for v1 bug #2)") {
+    mainNs.exec("def identity(x): return x");
     PyObject *arg = PyLong_FromLong(987654322);
     cppy3::Var argVar = cppy3::Var::steal(arg);
 
     cppy3::Var result;
     {
-      cppy3::arguments args;
-      args.push_back(argVar);
-      result = cppy3::Var::steal(
-          cppy3::call(cppy3::lookupCallable(cppy3::getMainModule(), L"identity").get(), args));
+      const cppy3::Var identity = mainNs.dict()["identity"];
+      result = identity(argVar);
     }
 
     // argVar and result are the only two live owners at this point.
@@ -218,41 +236,68 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
   }
 
   SECTION("Var::str() does not leak (regression for v1 bug #9)") {
-    cppy3::exec("import sys");
+    mainNs.exec("import sys");
     // a non-cached int: str() must allocate a fresh string every call
-    const cppy3::Var val = cppy3::eval("123456789");
+    const cppy3::Var val = mainNs.eval("123456789");
 
-    cppy3::exec("_before = sys.getallocatedblocks()");
+    mainNs.exec("_before = sys.getallocatedblocks()");
     for (int i = 0; i < 20000; i++)
       (void)val.str();
-    cppy3::exec("_after = sys.getallocatedblocks()");
-    cppy3::exec("assert (_after - _before) < 10000, (_before, _after)");
+    mainNs.exec("_after = sys.getallocatedblocks()");
+    mainNs.exec("assert (_after - _before) < 10000, (_before, _after)");
     REQUIRE(!cppy3::error());
   }
 
   SECTION("python -> c++ exception forwarding") {
     try {
-      // throw excepton in python
-      cppy3::exec("raise Exception('test-exception')");
+      // throw exception in python
+      mainNs.exec("raise Exception('test-exception')");
       REQUIRE( false );  // unreachable code
 
-    } catch (const cppy3::PythonException& e) {
+    } catch (const cppy3::Error& e) {
       // catch in c++
-      REQUIRE(e.info.type == L"<class 'Exception'>");
-      REQUIRE(e.info.reason == L"test-exception");
-      REQUIRE(e.info.trace.size() > 0);
+      REQUIRE(e.type_name() == "Exception");
+      REQUIRE(e.message() == "test-exception");
+      REQUIRE(e.traceback().size() > 0);
       REQUIRE(std::string(e.what()).size() > 0);
     }
-    // exception has been poped from python layer
+    // exception has been popped from python layer
     REQUIRE(!cppy3::error());
+  }
+
+  SECTION("chained exception (__cause__) via a real raise ... from ...") {
+    try {
+      mainNs.exec(
+          "try:\n"
+          "  raise RuntimeError('root cause')\n"
+          "except RuntimeError as e:\n"
+          "  raise ValueError('boom') from e\n");
+      REQUIRE(false); // unreachable
+    } catch (const cppy3::Error &e) {
+      REQUIRE(e.type_name() == "ValueError");
+      REQUIRE(e.message() == "boom");
+      REQUIRE(e.cause() != nullptr);
+      REQUIRE(e.cause()->type_name() == "RuntimeError");
+      REQUIRE(e.cause()->message() == "root cause");
+
+      const std::string formatted = e.format();
+      REQUIRE(formatted.find("ValueError: boom") != std::string::npos);
+      REQUIRE(formatted.find("RuntimeError: root cause") != std::string::npos);
+
+      // copy must deep-copy the cause chain, not alias it
+      cppy3::Error copy = e;
+      REQUIRE(copy.cause() != nullptr);
+      REQUIRE(copy.cause() != e.cause());
+      REQUIRE(copy.cause()->message() == "root cause");
+    }
   }
 
 #if CPPY3_BUILT_WITH_NUMPY
   SECTION("numpy ndarray support") {
 
     cppy3::importNumpy();
-    cppy3::exec("import numpy");
-    cppy3::exec("print('numpy version {}'.format(numpy.version.full_version))");
+    mainNs.exec("import numpy");
+    mainNs.exec("print('numpy version {}'.format(numpy.version.full_version))");
 
     // create numpy ndarray in C
     double cData[2] = {3.14, 42};
@@ -265,30 +310,28 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     REQUIRE(b(1, 0) == cData[1]);
 
     // inject into python __main__ namespace
-    cppy3::Var mainNs = cppy3::Var::borrow(cppy3::getMainDict());
-    mainNs.set_item("a", cppy3::Var::borrow(a));
-    mainNs.set_item("b", cppy3::Var::borrow(b));
-    cppy3::exec("print('a: {} {}'.format(type(a), a))");
-    cppy3::exec("print('b: {} {}'.format(type(b), b))");
-    cppy3::exec("assert type(a) == numpy.ndarray, 'expect injected instance'");
-    cppy3::exec("assert numpy.all(a == b), 'expect cData'");
+    mainNs.dict().set_item("a", cppy3::Var::borrow(a));
+    mainNs.dict().set_item("b", cppy3::Var::borrow(b));
+    mainNs.exec("print('a: {} {}'.format(type(a), a))");
+    mainNs.exec("print('b: {} {}'.format(type(b), b))");
+    mainNs.exec("assert type(a) == numpy.ndarray, 'expect injected instance'");
+    mainNs.exec("assert numpy.all(a == b), 'expect cData'");
 
     // modify b from python (b is a shared ndarray over cData)
-    cppy3::exec("b[0] = 100500");
+    mainNs.exec("b[0] = 100500");
     REQUIRE(b(0, 0) == 100500);
     REQUIRE(cData[0] == 100500);
   }
 #endif
 
-
   SECTION("test Scoped GIL Lock / Release") {
 
     // initially Python GIL is locked
-    REQUIRE(cppy3::GILLocker::isLocked());
+    REQUIRE(cppy3::gil_held());
 
     // add variable
-    cppy3::exec("a = []");
-    cppy3::List a = cppy3::List(cppy3::lookupObject(cppy3::getMainModule(), L"a"));
+    mainNs.exec("a = []");
+    cppy3::List a{mainNs.dict()["a"]};
     REQUIRE(a.size() == 0);
 
     // create thread that changes the variable a in a different thread
@@ -302,79 +345,110 @@ t = threading.Thread(target=thread_main, daemon=True)
 t.start()
 )";
     std::cout << threadScript << std::endl;
-    cppy3::exec(threadScript);
+    mainNs.exec(threadScript);
 
     {
       // release GIL on this thread
-      cppy3::ScopedGILRelease gilRelease;
-      REQUIRE(!cppy3::GILLocker::isLocked());
+      cppy3::GilRelease gilRelease;
+      REQUIRE(!cppy3::gil_held());
       // and wait thread changes the variable
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       {
         // lock GIL again before accessing python objects
-        cppy3::GILLocker locker;
-        REQUIRE(cppy3::GILLocker::isLocked());
+        cppy3::GilLock locker;
+        REQUIRE(cppy3::gil_held());
 
         // ensure that variable has been changed
-        cppy3::exec("assert a == [42], a");
+        mainNs.exec("assert a == [42], a");
         REQUIRE(a.size() == 1);
         REQUIRE(a[0].str() == "42");
       }
 
       // GIL is released again
-      REQUIRE(!cppy3::GILLocker::isLocked());
+      REQUIRE(!cppy3::gil_held());
     }
   }
+}
 
-  SECTION("cppy3::Error / throw_if_error() (v2, not yet wired into exec/eval)") {
-    PyObject *mainDict = cppy3::getMainDict();
+TEST_CASE("cppy3::Interpreter / Namespace features", "interpreter") {
+  SECTION("multiple isolated namespaces (bug #25)") {
+    cppy3::Interpreter interp;
+    cppy3::Namespace ns1 = interp.new_namespace();
+    cppy3::Namespace ns2 = interp.new_namespace();
+    ns1.set("x", 1);
+    ns2.set("x", 2);
+    REQUIRE(ns1.get<long>("x") == 1);
+    REQUIRE(ns2.get<long>("x") == 2);
+    // neither leaks into __main__
+    REQUIRE(!interp.main().dict().has_attr("x"));
+  }
 
-    SECTION("simple exception") {
-      PyObject *result = PyRun_String("raise ValueError('boom')", Py_file_input, mainDict, mainDict);
-      REQUIRE(result == nullptr);
+  SECTION("eval() uses PyErr_ExceptionMatches, not string comparison (bug #20)") {
+    cppy3::Interpreter interp;
+    cppy3::Namespace ns = interp.main();
 
-      try {
-        cppy3::throw_if_error();
-        REQUIRE(false); // unreachable
-      } catch (const cppy3::Error &e) {
-        REQUIRE(e.type_name() == "ValueError");
-        REQUIRE(e.message() == "boom");
-        REQUIRE(e.traceback().size() > 0);
-        REQUIRE(e.cause() == nullptr);
-      }
-      // exception has been fetched and cleared
-      REQUIRE(!cppy3::error());
+    // a genuine syntax error is reported as such, not silently retried
+    REQUIRE_THROWS_AS(ns.eval("1 +"), cppy3::Error);
+    try {
+      ns.eval("1 +");
+      REQUIRE(false);
+    } catch (const cppy3::Error &e) {
+      REQUIRE(e.type_name() == "SyntaxError");
     }
 
-    SECTION("chained exception (__cause__)") {
-      PyObject *result = PyRun_String(
-          "try:\n"
-          "  raise RuntimeError('root cause')\n"
-          "except RuntimeError as e:\n"
-          "  raise ValueError('boom') from e\n",
-          Py_file_input, mainDict, mainDict);
-      REQUIRE(result == nullptr);
+    // a statement (not a valid expression) falls back to exec() correctly
+    ns.eval("x = 5");
+    REQUIRE(ns.get<long>("x") == 5);
+  }
 
-      try {
-        cppy3::throw_if_error();
-        REQUIRE(false); // unreachable
-      } catch (const cppy3::Error &e) {
-        REQUIRE(e.type_name() == "ValueError");
-        REQUIRE(e.message() == "boom");
-        REQUIRE(e.cause() != nullptr);
-        REQUIRE(e.cause()->type_name() == "RuntimeError");
-        REQUIRE(e.cause()->message() == "root cause");
-
-        const std::string formatted = e.format();
-        REQUIRE(formatted.find("ValueError: boom") != std::string::npos);
-        REQUIRE(formatted.find("RuntimeError: root cause") != std::string::npos);
-
-        // copy must deep-copy the cause chain, not alias it
-        cppy3::Error copy = e;
-        REQUIRE(copy.cause() != nullptr);
-        REQUIRE(copy.cause() != e.cause());
-        REQUIRE(copy.cause()->message() == "root cause");
-      }
+  SECTION("exec_file compiles with the real filename, not \"<string>\" (bug #24)") {
+    const auto tmpPath = std::filesystem::temp_directory_path() / "cppy3_test_exec_file.py";
+    {
+      std::ofstream f(tmpPath);
+      f << "def boom():\n    raise ValueError('from file')\n";
     }
+
+    cppy3::Interpreter interp;
+    cppy3::Namespace ns = interp.main();
+    ns.exec_file(tmpPath);
+    REQUIRE(ns.get<std::string>("__file__") == tmpPath.string());
+
+    try {
+      ns.eval("boom()");
+      REQUIRE(false);
+    } catch (const cppy3::Error &e) {
+      REQUIRE(e.traceback().find(tmpPath.string()) != std::string::npos);
+    }
+
+    std::filesystem::remove(tmpPath);
+  }
+
+  SECTION("stdout/stderr redirection (bug #27)") {
+    cppy3::Interpreter interp;
+    std::string captured;
+    interp.set_stdout_hook([&captured](std::string_view s) { captured += s; });
+    interp.main().exec("print('hello from python', end='')");
+    REQUIRE(captured == "hello from python");
+  }
+
+  SECTION("Config::builtin_modules registers a custom C extension before init") {
+    cppy3::Config config;
+    config.builtin_modules.push_back({"test_ext", PyInit_test_ext});
+    cppy3::Interpreter interp(config);
+    cppy3::Namespace ns = interp.main();
+    ns.exec("import test_ext");
+    REQUIRE(ns.eval("test_ext.double_it(21)").to<long>() == 42);
+  }
+
+  SECTION("Config::argv populates sys.argv (bug #3 -- v1's setArgv() dereferenced a null PyConfig*)") {
+    cppy3::Config config;
+    config.program_name = "cppy3_test";
+    config.argv = {"--flag", "value"};
+    cppy3::Interpreter interp(config);
+    cppy3::Namespace ns = interp.main();
+    ns.exec("import sys");
+    REQUIRE(ns.eval("sys.argv[0]").str() == "cppy3_test");
+    REQUIRE(ns.eval("sys.argv[1]").str() == "--flag");
+    REQUIRE(ns.eval("sys.argv[2]").str() == "value");
   }
 }

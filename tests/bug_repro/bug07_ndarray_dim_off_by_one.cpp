@@ -18,7 +18,7 @@
 // isolate the dim1()/dim2() indexing bug against a genuine 2D array.
 int main()
 {
-  cppy3::PythonVM vm;
+  cppy3::Interpreter interpreter;
   cppy3::importNumpy();
 
   const size_t rows = 3, cols = 5;

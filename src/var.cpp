@@ -98,7 +98,7 @@ namespace cppy3
     return result == 1;
   }
 
-  void Var::set_attr(std::string_view name, const Var &value)
+  void Var::set_attr(std::string_view name, const Var &value) const
   {
     if (!*this)
       throw Error("cannot set attribute '" + std::string(name) + "' of a null Var");
@@ -118,7 +118,7 @@ namespace cppy3
     return Var::steal(result);
   }
 
-  void Var::set_item(std::string_view key, const Var &value)
+  void Var::set_item(std::string_view key, const Var &value) const
   {
     if (!*this)
       throw Error("cannot subscript a null Var");
@@ -137,7 +137,7 @@ namespace cppy3
     return Var::steal(result);
   }
 
-  void Var::set_item(Py_ssize_t index, const Var &value)
+  void Var::set_item(Py_ssize_t index, const Var &value) const
   {
     if (!*this)
       throw Error("cannot index a null Var");
@@ -257,19 +257,19 @@ namespace cppy3
     return List(Var::steal(o));
   }
 
-  void List::append(const Var &value)
+  void List::append(const Var &value) const
   {
     if (PyList_Append(get(), value.get()) != 0)
       throw_if_error();
   }
 
-  void List::insert(Py_ssize_t index, const Var &value)
+  void List::insert(Py_ssize_t index, const Var &value) const
   {
     if (PyList_Insert(get(), index, value.get()) != 0)
       throw_if_error();
   }
 
-  void List::remove(Py_ssize_t index)
+  void List::remove(Py_ssize_t index) const
   {
     if (PySequence_DelItem(get(), index) != 0)
       throw_if_error();
@@ -308,7 +308,7 @@ namespace cppy3
     return result == 1;
   }
 
-  void Dict::clear()
+  void Dict::clear() const
   {
     PyDict_Clear(get());
   }

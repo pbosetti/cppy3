@@ -31,25 +31,26 @@ PyInit_emb(void)
 
 int main(int argc, char *argv[])
 {
-    cppy3::PythonVM instance("emb", PyInit_emb);
+    cppy3::Config config;
+    config.builtin_modules.push_back({"emb", PyInit_emb});
+    cppy3::Interpreter interpreter(config);
+    cppy3::Namespace main = interpreter.main();
 
     std::cout << "Hey, type in command line, e.g. print(2+2*2)" << std::endl
               << std::endl;
- 
+
     size_t i = 0;
     for (std::string line; std::getline(std::cin, line); i++)
     {
         try
         {
-
-            const cppy3::Var result = cppy3::eval(line.c_str());
+            const cppy3::Var result = main.eval(line);
             std::cout << std::endl
                       << "Out[#" << i << " " << result.type_name() << "] " << result.str() << std::endl;
         }
-        catch (const cppy3::PythonException &e)
+        catch (const cppy3::Error &e)
         {
-
-            std::cerr << e.what() << std::endl;
+            std::cerr << e.format() << std::endl;
         }
     }
 
