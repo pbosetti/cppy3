@@ -4,13 +4,24 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 option(CPPY3_USE_BOOST_CONVERT "use Boost.Locale instead of std::codecvt for string conversion" OFF)
 option(CPPY3_BUILD_EXECUTABLES "Build cppy3 examples" OFF)
+option(CPPY3_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer (recoverable)" OFF)
+option(CPPY3_BUILD_BUG_REPRO "Build the v1 bug-reproduction diagnostics used to audit pre-v2 behavior (see plan Part 1 / Phase 0)" OFF)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     add_compile_options(/Zc:__cplusplus)
 endif()
 
+if(CPPY3_SANITIZE)
+    if(MSVC)
+        message(WARNING "CPPY3_SANITIZE is not supported with MSVC yet; ignoring")
+    else()
+        message(STATUS "Building with ASan+UBSan (recoverable)")
+        add_compile_options(-fsanitize=address,undefined -fsanitize-recover=address,undefined -fno-omit-frame-pointer -g -O1)
+        add_link_options(-fsanitize=address,undefined)
+    endif()
+endif()
 
 # find Boost if necessary
 if(USE_BOOST_CONVERT)
@@ -49,4 +60,8 @@ if(CPPY3_BUILD_EXECUTABLES)
     # make examples
     add_executable(console examples/console.cpp)
     target_link_libraries(console cppy3)
+endif()
+
+if(CPPY3_BUILD_BUG_REPRO)
+    add_subdirectory(tests/bug_repro)
 endif()
