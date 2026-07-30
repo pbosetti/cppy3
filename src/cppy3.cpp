@@ -103,7 +103,7 @@ namespace cppy3
     List sysPath{lookupObject(sys.get(), L"path")};
     for (auto path : paths)
     {
-      Var pyPath = Var::steal(convert(path));
+      Var pyPath = to_var(path);
       if (!sysPath.contains(pyPath))
       {
         // append into the 'sys.path'
@@ -285,79 +285,6 @@ namespace cppy3
       }
     }
     return PyExceptionData(exceptionType, exceptionMessage, exceptionTrace);
-  }
-
-  LIB_API PyObject *convert(const int &value)
-  {
-    PyObject *o = PyLong_FromLong(value);
-    assert(o);
-    return o;
-  }
-
-  LIB_API PyObject *convert(const double &value)
-  {
-    PyObject *o = PyFloat_FromDouble(value);
-    assert(o);
-    return o;
-  }
-
-  LIB_API PyObject *convert(const char *value)
-  {
-    PyObject *o = PyUnicode_FromString(value);
-    return o;
-  }
-
-  LIB_API PyObject *convert(const std::wstring &value)
-  {
-    PyObject *o = PyUnicode_FromWideChar(value.data(), value.size());
-    return o;
-  }
-
-  LIB_API void extract(PyObject *o, std::wstring &value)
-  {
-    Var str = Var::borrow(o);
-    if (!PyUnicode_Check(o))
-    {
-      // try cast to string
-      str = Var::steal(PyObject_Str(o));
-      if (!str)
-      {
-        throw PythonException(L"variable has no string representation");
-      }
-    }
-
-    Py_ssize_t size;
-    wchar_t* wideCharStr = PyUnicode_AsWideCharString(str.get(), &size);
-    if (wideCharStr != NULL) {
-      const std::wstring wstr(wideCharStr, size);
-      value = wstr;
-      PyMem_Free(wideCharStr);
-    }
-
-  }
-
-  LIB_API void extract(PyObject *o, double &value)
-  {
-    if (PyFloat_Check(o))
-    {
-      value = PyFloat_AsDouble(o);
-    }
-    else
-    {
-      throw PythonException(L"variable is not a real type");
-    }
-  }
-
-  LIB_API void extract(PyObject *o, long &value)
-  {
-    if (PyLong_Check(o))
-    {
-      value = PyLong_AsLong(o);
-    }
-    else
-    {
-      throw PythonException(L"variable is not a long type");
-    }
   }
 
   LIB_API Var import(const char *moduleName, PyObject *globals, PyObject *locals)

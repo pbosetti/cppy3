@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -109,6 +110,17 @@ namespace cppy3
     // instead of dereferencing it (v1's type() crashed on a NULL _o --
     // bug #4).
     [[nodiscard]] Type type() const noexcept;
+
+    // Value conversion via Converter<T> (see convert.hpp, which must be
+    // included for these to be usable -- cppy3.hpp does so). to<T>() throws
+    // Error on a type mismatch; try_to<T>() reports it as std::nullopt
+    // instead. Declared here but defined in convert.hpp: Converter<T> is
+    // not yet visible at this point, and convert.hpp itself needs the full
+    // Var definition, so the two headers cannot include each other.
+    template <typename T>
+    [[nodiscard]] T to() const;
+    template <typename T>
+    [[nodiscard]] std::optional<T> try_to() const;
 
     // Iterates via the Python iterator protocol (PyObject_GetIter /
     // PyIter_Next), so this works for any iterable -- list, dict (yields

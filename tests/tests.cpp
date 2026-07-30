@@ -1,5 +1,10 @@
+#include <cmath>
 #include <iostream>
+#include <map>
+#include <optional>
 #include <thread>
+#include <tuple>
+#include <utility>
 
 #include <cppy3/cppy3.hpp>
 #if CPPY3_BUILT_WITH_NUMPY
@@ -48,17 +53,15 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
   // create interpreter
   cppy3::PythonVM instance;
 
-  // v1's Main/injectVar<T>()/getVar<T>() are gone (Var now handles data
-  // access through attr()/operator[]/str()/type()/iteration instead, and
-  // to<T>()-style value conversion returns with the Converter<T> traits in
-  // a later phase). This section exercises what the new Var provides today.
-  SECTION("c++ -> python -> c++ variable access (Var attr/[]/str/type/iteration)") {
+  // v1's Main/injectVar<T>()/getVar<T>() are gone -- Var now handles data
+  // access through attr()/operator[]/str()/type()/iteration, and value
+  // conversion through to_var()/Var::to<T>()/try_to<T>() (Converter<T>).
+  SECTION("c++ -> python -> c++ variable access (Var attr/[]/str/type/iteration/to<T>)") {
     cppy3::Var mainNs = cppy3::Var::borrow(cppy3::getMainDict());
 
-    // inject C++ -> python via the (still-present, soon-superseded)
-    // convert() free function + Var::set_item()
-    mainNs.set_item("a", cppy3::Var::steal(cppy3::convert(2)));
-    mainNs.set_item("b", cppy3::Var::steal(cppy3::convert(2)));
+    // inject C++ -> python via to_var() + Var::set_item()
+    mainNs.set_item("a", cppy3::to_var(2));
+    mainNs.set_item("b", cppy3::to_var(2));
     cppy3::exec("assert a + b == 4");
     cppy3::exec("print('sum is', a + b)");
 
@@ -66,23 +69,41 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     const cppy3::Var sum = cppy3::eval("a + b");
     REQUIRE(sum.type() == cppy3::Var::Type::Long);
     REQUIRE(sum.str() == "4");
+    REQUIRE(sum.to<long>() == 4);
     REQUIRE(!cppy3::error());
+
+    // bug #32 fix: a Python int now converts to a C++ double too (v1's
+    // extract(o, double&) rejected this outright)
+    REQUIRE(sum.to<double>() == 4.0);
 
     // python var assign name from c++ -> python
     mainNs.set_item("sum_var", sum);
     cppy3::exec("assert sum_var == 4");
 
-    // cast to float in python, read back via Var
+    // cast to float in python, read back via Var::to<double>()
     cppy3::eval("sum_var = float(sum_var)");
     const cppy3::Var sumVar = mainNs["sum_var"];
     REQUIRE(sumVar.type() == cppy3::Var::Type::Float);
-    REQUIRE(sumVar.str() == "4.0");
+    REQUIRE(std::abs(sumVar.to<double>() - 4.0) < 1e-10);
 
-    // unicode strings round-trip via exec/eval; Var::str() is UTF-8 native
+    // a type mismatch throws via to<T>(), and is reported via try_to<T>()
+    // instead of throwing
+    REQUIRE_THROWS_AS(sumVar.to<std::vector<int>>(), cppy3::Error);
+    REQUIRE(!sumVar.try_to<std::vector<int>>().has_value());
+    REQUIRE(sum.try_to<long>().value() == 4);
+
+    // unicode strings round-trip via exec/eval; Var::str()/to<string>() are
+    // UTF-8 native
     const std::wstring unicodeStr = L"юникод smile ☺";
     cppy3::exec(L"uu = '" + unicodeStr + L"'");
     const cppy3::Var uVar = cppy3::eval("uu");
     REQUIRE(uVar.str() == cppy3::WideToUTF8(unicodeStr));
+    REQUIRE(uVar.to<std::wstring>() == unicodeStr);
+
+    // unicode string inject / extract via Converter<T>, not just exec/eval
+    mainNs.set_item("uVar2", cppy3::to_var(unicodeStr));
+    cppy3::exec("print('uVar2:', uVar2)");
+    REQUIRE(mainNs["uVar2"].to<std::wstring>() == unicodeStr);
 
     // attribute access on an arbitrary object
     cppy3::exec("class Point:\n  def __init__(self):\n    self.x = 3\npt = Point()");
@@ -99,6 +120,29 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     for (const cppy3::Var &item : seq)
       seen.push_back(item.str());
     REQUIRE(seen == std::vector<std::string>{"10", "20", "30"});
+  }
+
+  SECTION("Converter<T> / to_var() / to<T>() round-trips") {
+    REQUIRE(cppy3::to_var(true).to<bool>() == true);
+    REQUIRE(cppy3::to_var(0).to<bool>() == false); // Python truthiness, not just an actual bool
+    REQUIRE(cppy3::to_var(std::string("hi")).to<std::string>() == "hi");
+    REQUIRE(cppy3::to_var("hi").to<std::string>() == "hi"); // const char* overload
+
+    const std::vector<int> vec{1, 2, 3};
+    REQUIRE(cppy3::to_var(vec).to<std::vector<int>>() == vec);
+
+    const std::map<std::string, int> m{{"a", 1}, {"b", 2}};
+    REQUIRE(cppy3::to_var(m).to<std::map<std::string, int>>() == m);
+
+    REQUIRE(cppy3::to_var(std::optional<int>(42)).to<std::optional<int>>() == std::optional<int>(42));
+    REQUIRE(cppy3::to_var(std::optional<int>(std::nullopt)).is_none());
+    REQUIRE(cppy3::Var::steal(Py_NewRef(Py_None)).to<std::optional<int>>() == std::nullopt);
+
+    const auto pr = std::make_pair(1, std::string("one"));
+    REQUIRE((cppy3::to_var(pr).to<std::pair<int, std::string>>() == pr));
+
+    const auto tup = std::make_tuple(1, std::string("two"), 3.0);
+    REQUIRE(cppy3::to_var(tup).to<std::tuple<int, std::string, double>>() == tup);
   }
 
   // The v1 audit (see the plan's Phase 0 bug_repro/ diagnostics, preserved

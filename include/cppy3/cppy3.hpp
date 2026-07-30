@@ -27,6 +27,7 @@
 #include "utils.hpp"
 #include "error.hpp"
 #include "var.hpp"
+#include "convert.hpp"
 
 namespace cppy3
 {
@@ -147,37 +148,6 @@ namespace cppy3
   private:
     const std::string _what;
   };
-
-  /**
-   * Setters / getters for access and manipulation with python vars and namespaces.
-   *
-   * Superseded by the Converter<T> traits (to<T>()/injectVar successor) --
-   * kept only until that lands; do not build new code on these.
-   */
-  LIB_API PyObject *convert(const char *value);
-  LIB_API PyObject *convert(const std::wstring &value);
-  LIB_API PyObject *convert(const int &value);
-  LIB_API PyObject *convert(const double &value);
-
-  template <typename T>
-  PyObject *convert(const std::vector<T> &value)
-  {
-    PyObject *o = PyList_New(value.size());
-    assert(o);
-
-    for (size_t i = 0; i < value.size(); ++i)
-    {
-      PyObject *item = convert(value[i]);
-      assert(item);
-      int r = PyList_SetItem(o, i, item);
-      assert(r == 0);
-    }
-    return o;
-  }
-
-  LIB_API void extract(PyObject *o, std::wstring &value);
-  LIB_API void extract(PyObject *o, long &value);
-  LIB_API void extract(PyObject *o, double &value);
 
   /**
    * GIL state scoped-lock
