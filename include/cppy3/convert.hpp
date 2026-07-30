@@ -372,4 +372,86 @@ namespace cppy3
       return std::make_tuple(Converter<Ts>::from_python(value[static_cast<Py_ssize_t>(Is)])...);
     }
   };
+
+  // Keyword arguments for Var::call_kw(). Values must already be Vars
+  // (call to_var() explicitly at the call site, e.g.
+  // obj.call_kw({{"x", to_var(1)}})) -- consistent with the rest of cppy3
+  // deliberately not offering an implicit T->Var conversion.
+  class Kwargs
+  {
+  public:
+    Kwargs() = default;
+    Kwargs(std::initializer_list<std::pair<std::string_view, Var>> items)
+    {
+      _items.reserve(items.size());
+      for (const auto &item : items)
+        _items.emplace_back(item.first, item.second);
+    }
+
+    [[nodiscard]] auto begin() const noexcept { return _items.begin(); }
+    [[nodiscard]] auto end() const noexcept { return _items.end(); }
+
+  private:
+    std::vector<std::pair<std::string_view, Var>> _items;
+  };
+
+  template <typename... A>
+  Var Var::operator()(A &&...args) const
+  {
+    if (!*this)
+      throw Error("cannot call a null Var");
+    if (!callable())
+      throw Error("object of type '" + type_name() + "' is not callable");
+
+    Var argsTuple = Var::steal(PyTuple_New(static_cast<Py_ssize_t>(sizeof...(A))));
+    if (!argsTuple)
+      throw_if_error();
+    Py_ssize_t i = 0;
+    // PyTuple_SetItem steals; to_var(...).release() hands it a reference
+    // with nothing else still owning it, unlike v1's call() which handed
+    // over a borrowed pointer while the caller's vector kept its own claim
+    // on it too (bug #2).
+    (PyTuple_SetItem(argsTuple.get(), i++, to_var(std::forward<A>(args)).release()), ...);
+
+    Var result = Var::steal(PyObject_CallObject(_o, argsTuple.get()));
+    if (!result)
+      throw_if_error();
+    return result;
+  }
+
+  template <typename... A>
+  Var Var::call_kw(const Kwargs &kwargs, A &&...args) const
+  {
+    if (!*this)
+      throw Error("cannot call a null Var");
+    if (!callable())
+      throw Error("object of type '" + type_name() + "' is not callable");
+
+    Var argsTuple = Var::steal(PyTuple_New(static_cast<Py_ssize_t>(sizeof...(A))));
+    if (!argsTuple)
+      throw_if_error();
+    Py_ssize_t i = 0;
+    (PyTuple_SetItem(argsTuple.get(), i++, to_var(std::forward<A>(args)).release()), ...);
+
+    Var kwargsDict = Var::steal(PyDict_New());
+    if (!kwargsDict)
+      throw_if_error();
+    for (const auto &[name, value] : kwargs)
+    {
+      const std::string key(name);
+      if (PyDict_SetItemString(kwargsDict.get(), key.c_str(), value.get()) != 0)
+        throw_if_error();
+    }
+
+    Var result = Var::steal(PyObject_Call(_o, argsTuple.get(), kwargsDict.get()));
+    if (!result)
+      throw_if_error();
+    return result;
+  }
+
+  template <typename... A>
+  Var Var::method(std::string_view name, A &&...args) const
+  {
+    return attr(name)(std::forward<A>(args)...);
+  }
 }

@@ -13,6 +13,11 @@
 
 namespace cppy3
 {
+  // Keyword arguments for Var::call_kw(). Forward-declared; fully defined
+  // in convert.hpp (it stores Vars by name, so it needs the complete Var
+  // type, and convert.hpp is where to_var()/Converter<T> already live).
+  class Kwargs;
+
   // A reference-counted, RAII-managed PyObject* holder -- the core value
   // type of cppy3. Every Python object that crosses into C++ is a Var.
   //
@@ -96,6 +101,23 @@ namespace cppy3
     [[nodiscard]] Py_ssize_t size() const;
 
     [[nodiscard]] bool callable() const noexcept;
+
+    // Calls *this with positional arguments, each converted via
+    // to_var()/Converter<T>. Throws Error if *this is not callable or the
+    // call raises. Declared here but defined in convert.hpp, same reason
+    // as to<T>()/try_to<T>() above.
+    template <typename... A>
+    [[nodiscard]] Var operator()(A &&...args) const;
+
+    // Calls *this with keyword arguments plus optional positional ones,
+    // e.g. obj.call_kw({{"x", to_var(1)}}, positional_arg).
+    template <typename... A>
+    [[nodiscard]] Var call_kw(const Kwargs &kwargs, A &&...args) const;
+
+    // Looks up and calls a bound method: obj.method("name", args...) is
+    // shorthand for obj.attr("name")(args...).
+    template <typename... A>
+    [[nodiscard]] Var method(std::string_view name, A &&...args) const;
 
     // Python str()/repr(), and the bare C type name (e.g. "int",
     // "NoneType"), all as UTF-8. Unlike v1's toString()/typeName(), these

@@ -375,7 +375,6 @@ namespace cppy3
       }
     }
 
-    PyErr_Clear();
     result = PyObject_CallObject(callable, argsTuple.get());
     rethrowPythonException();
 

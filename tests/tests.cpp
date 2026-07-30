@@ -145,6 +145,37 @@ TEST_CASE( "cppy3: Embedding Python into C++ code", "main funcs" ) {
     REQUIRE(cppy3::to_var(tup).to<std::tuple<int, std::string, double>>() == tup);
   }
 
+  SECTION("Var::operator()/call_kw/method") {
+    cppy3::Var mainNs = cppy3::Var::borrow(cppy3::getMainDict());
+
+    cppy3::exec("def add(a, b): return a + b");
+    REQUIRE(mainNs["add"](2, 3).to<long>() == 5);
+
+    cppy3::exec("def greet(name, greeting='Hello'): return f'{greeting}, {name}!'");
+    const cppy3::Var greet = mainNs["greet"];
+    REQUIRE(greet("World").str() == "Hello, World!");
+    REQUIRE(greet.call_kw({{"greeting", cppy3::to_var("Hi")}}, "World").str() == "Hi, World!");
+
+    cppy3::exec(
+        "class Counter:\n"
+        "  def __init__(self):\n"
+        "    self.n = 0\n"
+        "  def add(self, x):\n"
+        "    self.n += x\n"
+        "    return self.n\n");
+    const cppy3::Var counter = mainNs["Counter"]();
+    REQUIRE(counter.method("add", 3).to<long>() == 3);
+    REQUIRE(counter.method("add", 4).to<long>() == 7);
+
+    // calling a non-callable throws Error rather than crashing
+    REQUIRE_THROWS_AS(cppy3::to_var(42)(), cppy3::Error);
+
+    // a Python-side exception raised during the call propagates
+    cppy3::exec("def boom(): raise ValueError('kaboom')");
+    REQUIRE_THROWS_AS(mainNs["boom"](), cppy3::Error);
+    REQUIRE(!cppy3::error()); // and the interpreter's error state was consumed
+  }
+
   // The v1 audit (see the plan's Phase 0 bug_repro/ diagnostics, preserved
   // in git history) found three refcount/leak bugs reachable through the
   // old Var API: a broken copy-assignment operator (#1), call() silently
