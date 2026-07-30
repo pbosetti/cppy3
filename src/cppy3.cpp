@@ -84,11 +84,9 @@ namespace cppy3
   Var createClassInstance(const std::wstring &callable)
   {
     GILLocker lock;
-    Var instance;
-
-    instance.newRef(call(lookupCallable(getMainModule(), callable)));
+    Var instance = Var::steal(call(lookupCallable(getMainModule(), callable).get()));
     rethrowPythonException();
-    if (instance.none())
+    if (instance.is_none())
     {
       std::wstringstream ss;
       ss << L"error instantiating '" << callable << "': " << getErrorObject().toString();
@@ -102,10 +100,10 @@ namespace cppy3
     GILLocker lock;
 
     Var sys = import("sys");
-    List sysPath(lookupObject(sys, L"path"));
+    List sysPath{lookupObject(sys.get(), L"path")};
     for (auto path : paths)
     {
-      Var pyPath(convert(path));
+      Var pyPath = Var::steal(convert(path));
       if (!sysPath.contains(pyPath))
       {
         // append into the 'sys.path'
@@ -123,10 +121,8 @@ namespace cppy3
   {
     GILLocker lock;
     PyObject *mainDict = getMainDict();
-    Var result;
-
-    result.newRef(PyRun_String(pythonScript, Py_file_input, mainDict, mainDict));
-    if (result.data() == NULL)
+    Var result = Var::steal(PyRun_String(pythonScript, Py_file_input, mainDict, mainDict));
+    if (!result)
     {
       rethrowPythonException();
     }
@@ -137,10 +133,8 @@ namespace cppy3
   {
     GILLocker lock;
     PyObject *mainDict = getMainDict();
-    Var result;
-
-    result.newRef(PyRun_String(pythonScript, Py_eval_input, mainDict, mainDict));
-    if (result.data() == NULL)
+    Var result = Var::steal(PyRun_String(pythonScript, Py_eval_input, mainDict, mainDict));
+    if (!result)
     {
       const PyExceptionData excData = getErrorObject(false);
       if (excData.type == L"<class 'SyntaxError'>")
@@ -321,19 +315,19 @@ namespace cppy3
 
   LIB_API void extract(PyObject *o, std::wstring &value)
   {
-    Var str(o);
+    Var str = Var::borrow(o);
     if (!PyUnicode_Check(o))
     {
       // try cast to string
-      str.newRef(PyObject_Str(o));
-      if (!str.data())
+      str = Var::steal(PyObject_Str(o));
+      if (!str)
       {
         throw PythonException(L"variable has no string representation");
       }
     }
 
     Py_ssize_t size;
-    wchar_t* wideCharStr = PyUnicode_AsWideCharString(str, &size);
+    wchar_t* wideCharStr = PyUnicode_AsWideCharString(str.get(), &size);
     if (wideCharStr != NULL) {
       const std::wstring wstr(wideCharStr, size);
       value = wstr;
@@ -366,98 +360,10 @@ namespace cppy3
     }
   }
 
-  LIB_API std::wstring Var::toString() const
-  {
-    return toString(_o);
-  }
-
-  LIB_API std::wstring Var::toString(PyObject *val)
-  {
-    assert(val);
-    std::wstringstream result;
-    // try str() operator
-    PyObject *str = PyObject_Str(val);
-    if (!str)
-    {
-      // try repr() operator
-      str = PyObject_Repr(val);
-    }
-    if (str)
-    {
-      result << pyUnicodeToWstring(str);
-    }
-    else
-    {
-      result << "< type='" << val->ob_type->tp_name << L"' has no string representation >";
-    }
-    return result.str();
-  }
-
-  LIB_API long Var::toLong() const
-  {
-    long value = 0;
-    extract(_o, value);
-    return value;
-  }
-
-  LIB_API double Var::toDouble() const
-  {
-    double value = 0;
-    extract(_o, value);
-    return value;
-  }
-
-  LIB_API Var::Type Var::type() const
-  {
-    if (PyLong_Check(_o))
-    {
-      return LONG;
-    }
-    else if (PyFloat_Check(_o))
-    {
-      return FLOAT;
-    }
-    else if (PyUnicode_Check(_o))
-    {
-      return STRING;
-    }
-    else if (PyTuple_Check(_o))
-    {
-      return TUPLE;
-    }
-    else if (PyDict_Check(_o))
-    {
-      return DICT;
-    }
-    else if (PyList_Check(_o))
-    {
-      return LIST;
-    }
-    else if (PyBool_Check(_o))
-    {
-      return BOOL;
-    }
-#ifdef NPY_NDARRAYOBJECT_H
-    else if (PyArray_Check(_o))
-    {
-      return TYPE_NUMPY_NDARRAY;
-    }
-#endif
-    else if (PyModule_Check(_o))
-    {
-      return MODULE;
-    }
-    else
-    {
-      return UNKNOWN;
-    }
-  }
-
   LIB_API Var import(const char *moduleName, PyObject *globals, PyObject *locals)
   {
-    Var module;
-    module.newRef(PyImport_ImportModuleEx(const_cast<char *>(moduleName), globals, locals, NULL));
-    if (module.null())
+    Var module = Var::steal(PyImport_ImportModuleEx(const_cast<char *>(moduleName), globals, locals, NULL));
+    if (!module)
     {
       const PyExceptionData excData = getErrorObject();
       throw PythonException(excData);
@@ -473,25 +379,22 @@ namespace cppy3
     while (std::getline(wss, temp, L'.'))
       items.push_back(temp);
 
-    Var p(module);
-    // Var prev;  // (1) cause refcount bug
+    Var p = Var::borrow(module);
     std::string itemName;
-    for (auto it = items.begin(); it != items.end() && !p.null(); ++it)
+    for (auto it = items.begin(); it != items.end() && p; ++it)
     {
-
-      // prev = p; // (2) cause refcount bug
       itemName = WideToUTF8(*it);
-      if (PyDict_Check(p))
+      if (PyDict_Check(p.get()))
       {
-        p = Var(PyDict_GetItemString(p, itemName.data()));
+        p = Var::borrow(PyDict_GetItemString(p.get(), itemName.data()));
       }
       else
       {
         // PyObject_GetAttrString returns new reference
-        p.newRef(PyObject_GetAttrString(p, itemName.data()));
+        p = Var::steal(PyObject_GetAttrString(p.get(), itemName.data()));
       }
 
-      if (p.null())
+      if (!p)
       {
         std::wstringstream wss;
         wss << L"lookup " << name << L" failed: no item " << UTF8ToWide(itemName);
@@ -505,7 +408,7 @@ namespace cppy3
   {
     Var p = lookupObject(module, name);
 
-    if (!PyCallable_Check(p))
+    if (!p.callable())
     {
       std::wstringstream wss;
       wss << L"PyObject " << name << L" is not callable";
@@ -530,16 +433,23 @@ namespace cppy3
     const size_t argsCount = args.size();
     if (argsCount > 0)
     {
-      argsTuple.newRef(PyTuple_New(argsCount));
-      for (int i = 0; i < argsCount; i++)
+      argsTuple = Var::steal(PyTuple_New(argsCount));
+      for (size_t i = 0; i < argsCount; i++)
       {
-        // steals reference
-        PyTuple_SetItem(argsTuple, i, args[i]);
+        // PyTuple_SetItem steals the reference it's given; args[i].get() is
+        // a borrowed pointer (the caller's `arguments` vector still owns
+        // it), so it must be incref'd first. v1 passed the borrowed
+        // pointer straight through, silently double-decref'ing every
+        // argument once the tuple and the caller's vector both released it
+        // (plan bug #2).
+        PyObject *item = args[i].get();
+        Py_XINCREF(item);
+        PyTuple_SetItem(argsTuple.get(), static_cast<Py_ssize_t>(i), item);
       }
     }
 
     PyErr_Clear();
-    result = PyObject_CallObject(callable, argsTuple);
+    result = PyObject_CallObject(callable, argsTuple.get());
     rethrowPythonException();
 
     return result;
@@ -547,7 +457,7 @@ namespace cppy3
 
   LIB_API PyObject *call(const char *callable, const arguments &args)
   {
-    return call(lookupCallable(getMainModule(), UTF8ToWide(callable)), args);
+    return call(lookupCallable(getMainModule(), UTF8ToWide(callable)).get(), args);
   }
 
   LIB_API PyObject *call(PyObject *callable) { return call(callable, arguments()); }

@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
 
             const cppy3::Var result = cppy3::eval(line.c_str());
             std::cout << std::endl
-                      << "Out[#" << i << " " << result.typeName() << "] " << result.toUTF8String() << std::endl;
+                      << "Out[#" << i << " " << result.type_name() << "] " << result.str() << std::endl;
         }
         catch (const cppy3::PythonException &e)
         {
