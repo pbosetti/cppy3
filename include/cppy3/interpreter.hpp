@@ -77,7 +77,12 @@ namespace cppy3
   {
     // PYTHONHOME equivalent: the prefix of the Python installation/venv to
     // embed. Leave unset to use the interpreter this program was linked
-    // against.
+    // against. On Windows, CPython's own auto-detection (from this
+    // process's executable path) has been observed to fail to find the
+    // stdlib in at least one environment -- if Interpreter's constructor
+    // throws "Failed to import encodings module", set this (or
+    // `executable` below) explicitly rather than relying on auto-detect;
+    // see README's Known limitations.
     std::optional<std::filesystem::path> home;
 
     // sys.executable. Leave unset to let CPython calculate it.

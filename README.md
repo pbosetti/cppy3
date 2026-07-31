@@ -272,6 +272,22 @@ FetchContent_MakeAvailable(cppy3)
 target_link_libraries(your_target PRIVATE cppy3::cppy3)
 ```
 
+### Known limitations
+
+* **Windows: zero-config `Interpreter` construction can fail to find the
+  stdlib.** With `Config::home`/`Config::executable` left unset, CPython's
+  own `getpath.py` auto-detection is supposed to locate its installation
+  relative to the running executable; on at least one observed environment
+  (GitHub's `windows-latest` Actions runner, embedding from a binary that
+  isn't itself named `python.exe`) this fails with `Failed to import
+  encodings module` / `error reading frozen getpath.py` instead of falling
+  back to a working default. Root cause not yet pinned down (CI runs this
+  project's own test suite with `continue-on-error` on Windows as a result
+  -- see [the workflow](.github/workflows/cmake-multi-platform.yml)).
+  Until resolved, Windows embedders should set `Config::executable` (or
+  `Config::home`) explicitly to the Python installation's own `python.exe`
+  / prefix rather than relying on the zero-config default.
+
 ### License
 
 [MIT License](LICENSE). Feel free to use.
