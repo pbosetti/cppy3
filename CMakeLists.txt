@@ -18,7 +18,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 if(MSVC)
-    add_compile_options(/Zc:__cplusplus)
+    # Without /utf-8, MSVC decodes non-ASCII narrow/wide string literals
+    # using the build machine's active code page instead of the source
+    # file's actual UTF-8 encoding, corrupting any literal Unicode text
+    # (e.g. tests.cpp's Cyrillic/CJK round-trip tests) before it ever
+    # reaches this project's own (correct) UTF-8 <-> wide-string codec.
+    add_compile_options(/Zc:__cplusplus /utf-8)
 endif()
 
 if(CPPY3_SANITIZE)
