@@ -48,6 +48,15 @@ add_subdirectory(src)
 if(CPPY3_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+
+    # tools/migrate_v1_to_v2.py's own test suite (stdlib unittest, no
+    # pytest/third-party dependency) -- verifies the migration script
+    # actually produces what MIGRATION.md documents.
+    add_test(
+        NAME migrate_v1_to_v2_script
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_migrate.py
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
 endif()
 
 if(CPPY3_BUILD_EXAMPLES)

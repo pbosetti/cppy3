@@ -33,3 +33,7 @@ build-*
 .vscode
 
 /.DS_Store
+
+# Python (tools/migrate_v1_to_v2.py and its tests)
+__pycache__/
+*.pyc

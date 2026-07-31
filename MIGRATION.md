@@ -18,6 +18,17 @@ python3 tools/migrate_v1_to_v2.py --apply path/to/your/code
 The tables below are the same rule set the script uses (`--json` dumps it
 verbatim), so this document and the script cannot drift apart.
 
+A few v1 spellings (`exec()`, `eval()`, `execScriptFile()`, `Main().inject*`,
+`getMainDict()`) became methods on a `cppy3::Namespace` in v2, but the
+script cannot know what you named your `Namespace` variable. For those, it
+rewrites the call with a literal placeholder receiver,
+`/*YOUR_NAMESPACE*/`, e.g. `cppy3::exec("...")` becomes
+`/*YOUR_NAMESPACE*/.exec("...")`. After running with `--apply`, grep for
+`YOUR_NAMESPACE` and replace each occurrence with your actual `Namespace`
+(e.g. `interpreter.main()`, or a variable holding it) -- the placeholder is
+deliberately not valid C++, so these sites fail to compile until you do,
+rather than silently referencing the wrong thing.
+
 ## Automatic renames
 
 These are one-to-one token substitutions; the script applies them without
@@ -30,9 +41,9 @@ supervision.
 | `GILLocker` | `GilLock` |
 | `ScopedGILLock` | `GilLock` |
 | `ScopedGILRelease` | `GilRelease` |
-| `cppy3::Main()` | `interpreter.main()` |
-| `Var::from(x)` / `.newRef(x)` | `Var::steal(x)` |
-| `.reset(x)` (on a `Var`) | `Var::borrow(x)` |
+| `cppy3::GILLocker::isLocked()` | `cppy3::gil_held()` |
+| `Var::from(x)` | `Var::steal(x)` |
+| `.newRef(x)` (on a live `Var`) | `= Var::steal(x)` (an assignment) |
 | `.toUTF8String()` | `.str()` |
 | `.toLong()` | `.to<long>()` |
 | `.toDouble()` | `.to<double>()` |
@@ -40,45 +51,77 @@ supervision.
 | `e.info.reason` | `e.message()` |
 | `e.info.type` | `e.type_name()` |
 | `e.info.trace` | `e.traceback()` |
-| `cppy3::GILLocker::isLocked()` | `cppy3::gil_held()` |
 
 ## Assisted renames
 
-The script rewrites these too, but the change alters behavior -- verify
-the surrounding code after applying it.
+The script rewrites these too, but either the change alters behavior, or
+it needs the `/*YOUR_NAMESPACE*/` placeholder above -- verify the
+surrounding code (and resolve the placeholder) after applying it.
 
 | v1 | v2 | What changes |
 | --- | --- | --- |
-| `getVar<T>(name, out)` | `out = ns.get<T>(name)` | Returns the value instead of writing through an out-parameter. |
-| `call(f, args)` | `f(args...)` | Now returns an owning `Var`. If your v1 code manually `Py_DECREF`'d the raw `PyObject*` `call()` returned, **delete that decref** -- it would now double-free. |
-| `execScriptFile(path)` | `ns.exec_file(path)` | Tracebacks and `__file__` now show the real path instead of `"<string>"`. |
-| `L"..."` wide string literals (script source) | UTF-8 `"..."` | `exec()`/`eval()` are UTF-8-only in v2; there's no wide-string overload for source code (there still is for data going through `Converter<std::wstring>`). |
+| `cppy3::exec(code)` | `ns.exec(code)` | Namespace receiver needed. |
+| `cppy3::eval(expr)` | `ns.eval(expr)` | Namespace receiver needed. |
+| `cppy3::execScriptFile(path)` | `ns.exec_file(path)` | Namespace receiver needed; tracebacks and `__file__` now show the real path instead of `"<string>"`. |
+| `cppy3::Main().injectVar<T>(name, value)` | `ns.set(name, value)` | Namespace receiver needed. |
+| `cppy3::Main().inject(name, value)` | `ns.set(name, value)` | Namespace receiver needed. |
+| `cppy3::Main().getVar<T>(name, out)` | `out = ns.get<T>(name)` | Namespace receiver needed; also returns the value instead of writing through an out-parameter. |
+| `cppy3::getMainDict()` | `ns.dict().get()` | Namespace receiver needed. |
+| `.reset(x)` (on a `Var`) | `= Var::borrow(x)` (an assignment) | **Caution:** `.reset(` is also a common `std::unique_ptr`/`std::optional` method name unrelated to cppy3 -- the script rewrites any `IDENT.reset(x)` it sees, so verify the receiver is actually a `cppy3::Var` before keeping each one. |
 
 ## Manual review required
 
-The script flags these; it does not rewrite them.
+### Flagged by the script
+
+These have no mechanical rewrite (the target needs real restructuring, or
+the pattern is ambiguous without type information); the script reports
+each occurrence's file/line and a note, but never rewrites them.
+
+* **`cppy3::Main()`**, used any way other than `.injectVar<T>(...)`/
+  `.inject(...)`/`.getVar<T>(...)` (those three are rewritten
+  automatically -- see above). Replace with your `cppy3::Namespace`.
+* **`cppy3::getMainModule()`** -- returned the `__main__` module object
+  itself; `Namespace` only wraps its dict. Use
+  `PyImport_AddModule("__main__")` directly if you need the module object.
+* **`cppy3::lookupObject(m, name)` / `cppy3::lookupCallable(m, name)`** --
+  use `Var::attr()`/`operator[]` directly, e.g.
+  `lookupObject(m, L"a.b")` becomes `Var(m).attr("a").attr("b")`.
+* **`cppy3::call(f, args)`** -- becomes `f(args...)` (`Var::operator()`),
+  which returns an owning `Var`. If you manually `Py_DECREF`'d the raw
+  `PyObject*` `call()` returned, **delete that decref** -- it would now
+  double-free.
+* **`cppy3::arguments`** -- was `call()`'s `std::vector<Var>` argument-list
+  type; `Var::operator()` takes a variadic argument pack directly instead.
+* **`cppy3::createClassInstance(name)`** -- becomes
+  `ns.dict()["ClassName"](...)`, an ordinary `Var` call.
+* **`cppy3::setArgv(...)`** -- removed outright (it never worked: it
+  dereferenced a null `PyConfig*`). Use `Config::argv` when constructing
+  the `Interpreter`.
+* **`.wrap(`/`.dim1(`/`.dim2(`** on an `NDArray` -- `wrap()` is now a
+  static factory (`NDArray<T>::wrap(...)`), and `dim1()`/`dim2()` are
+  0/1-indexed (v1's were off by one). Not necessarily cppy3-related if
+  it's an unrelated type's method of the same name -- the script flags
+  every occurrence for you to check.
+* **`assert(...)` calls mentioning `cppy3::`** -- v1 used `assert()` for
+  invalid input (compiled out under `NDEBUG`); v2 throws `cppy3::Error`
+  instead. Replace with a `try`/`catch` if you need to handle the failure,
+  or simply remove the assert if letting the exception propagate is fine.
+
+### Not detectable by the script
+
+These have no regex signature reliable enough to flag automatically; be
+aware of them regardless when migrating by hand.
 
 * **`Var::operator PyObject*()`** -- removed. Anywhere v1 code passed a
   `Var` directly to a `PyObject*`-typed parameter (implicitly), call
   `.get()` explicitly now. This is deliberate: that implicit conversion is
   what let v1's `call()` silently double-decref its arguments.
-* **`setArgv()`** -- removed (it never worked: it dereferenced a null
-  `PyConfig*`). Use `Config::argv` when constructing the `Interpreter`.
 * **Custom `Var` copy-assignment workarounds** -- v1's `Var` had no
-  `operator=`, so some v1 code may have hand-rolled ways to avoid triggering
-  the compiler-generated (buggy) one. v2's `Var::operator=` is correct;
-  remove the workaround.
-* **`assert()` calls guarding cppy3 operations** -- v1 used `assert()` for
-  invalid input (compiled out under `NDEBUG`); v2 throws `cppy3::Error`
-  instead. Replace `assert(cppy3_call_that_might_fail())`-style guards with
-  a `try`/`catch` if you need to handle the failure, or simply remove the
-  assert if letting the exception propagate is fine.
-* **Direct `NDArray::wrap()`/`dim1()`/`dim2()` use** -- v1's 1D `wrap()`
-  aliased the wrong memory entirely, and `dim1()`/`dim2()` were off by one.
-  If your code compensated for either bug, remove the compensation; v2's
-  versions are correct.
-* **Raw `PyObject*` handling adjacent to a rewritten call** -- anywhere the
-  script rewrote a call that used to hand back or accept a raw
+  `operator=`, so some v1 code may have hand-rolled ways to avoid
+  triggering the compiler-generated (buggy) one. v2's `Var::operator=` is
+  correct; remove the workaround.
+* **Raw `PyObject*` handling adjacent to a rewritten call** -- anywhere a
+  rule above rewrote a call that used to hand back or accept a raw
   `PyObject*`, double-check neighboring code that manually
   incref'd/decref'd it.
 
