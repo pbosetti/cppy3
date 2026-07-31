@@ -1,5 +1,10 @@
 # cppy3
 
+[![CI](https://github.com/pbosetti/cppy3/actions/workflows/cmake-multi-platform.yml/badge.svg?branch=main)](https://github.com/pbosetti/cppy3/actions/workflows/cmake-multi-platform.yml)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ## Embed Python 3 into your C++ app in a few minutes
 
 #### Minimalistic library for embedding [CPython](https://github.com/python/cpython) 3.x into a C++ application
