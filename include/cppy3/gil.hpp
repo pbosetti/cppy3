@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Python.h>
+#include <cppy3/pycompat.hpp>
 
 #include <cppy3/libdefs.hpp>
 

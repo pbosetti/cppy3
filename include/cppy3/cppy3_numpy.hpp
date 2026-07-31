@@ -15,7 +15,7 @@
 #undef _XOPEN_SOURCE
 #endif
 
-#include <Python.h>
+#include <cppy3/pycompat.hpp>
 
 // deal with crazy numpy 1.7.x api init procedure
 #define PY_ARRAY_UNIQUE_SYMBOL PyArray_API__CPPY3_APP_TOKEN

@@ -238,10 +238,39 @@ namespace cppy3
     status = Py_InitializeFromConfig(&pyConfig);
     PyConfig_Clear(&pyConfig);
     if (PyStatus_Exception(status))
+    {
+      // A failed Py_InitializeFromConfig() can still leave the runtime
+      // partially/technically initialized (CPython's own docs recommend
+      // Py_ExitStatusException() here, i.e. terminating the process rather
+      // than continuing). We throw instead so a single failed Interpreter
+      // construction doesn't take down the whole host process -- but that
+      // means, without this Py_Finalize(), every later Interpreter
+      // construction in the same process would find Py_IsInitialized()
+      // still true and fail loudly at PyImport_AppendInittab() ("...may
+      // not be called after Py_Initialize()") or crash outright, even
+      // though no live Interpreter object owns that state to clean it up
+      // (this object's constructor never returns, so its destructor never
+      // runs either). Best-effort recovery, not a guarantee: CPython does
+      // not promise a partially-initialized runtime finalizes cleanly.
+      if (Py_IsInitialized())
+        Py_Finalize();
       throw_status(status);
+    }
 
-    if (!config.extra_sys_path.empty())
-      append_sys_path(config.extra_sys_path);
+    try
+    {
+      if (!config.extra_sys_path.empty())
+        append_sys_path(config.extra_sys_path);
+    }
+    catch (...)
+    {
+      // Same reasoning as above: initialization itself succeeded, so
+      // without this the runtime would stay alive and initialized forever
+      // -- this object never finishes constructing, so ~Interpreter() will
+      // never call Py_Finalize() for it.
+      Py_Finalize();
+      throw;
+    }
   }
 
   Interpreter::~Interpreter()
