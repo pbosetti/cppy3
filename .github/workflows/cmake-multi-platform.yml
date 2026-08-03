@@ -90,8 +90,8 @@ jobs:
       id: python-paths
       shell: bash
       run: |
-        python3 -c "import sys; print('python-exe=' + sys.executable.replace('\\', '/'))" >> "$GITHUB_OUTPUT"
-        python3 -c "import numpy; print('numpy-include=' + numpy.get_include().replace('\\', '/'))" >> "$GITHUB_OUTPUT"
+        python3 -c "import sys, pathlib; print('python-exe=' + pathlib.Path(sys.executable).as_posix())" >> "$GITHUB_OUTPUT"
+        python3 -c "import numpy, pathlib; print('numpy-include=' + pathlib.Path(numpy.get_include()).as_posix())" >> "$GITHUB_OUTPUT"
         cat "$GITHUB_OUTPUT"
 
     - name: Configure CMake
