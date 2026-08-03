@@ -1,7 +1,5 @@
 #include <cppy3/error.hpp>
 
-#include <format>
-
 namespace cppy3
 {
   namespace
@@ -96,7 +94,7 @@ namespace cppy3
   }
 
   Error::Error(std::string type_name, std::string message, std::string traceback, std::unique_ptr<Error> cause)
-      : std::runtime_error(type_name.empty() ? message : std::format("{}: {}", type_name, message)),
+      : std::runtime_error(type_name.empty() ? message : type_name + ": " + message),
         _type_name(std::move(type_name)),
         _message(std::move(message)),
         _traceback(std::move(traceback)),
@@ -140,11 +138,11 @@ namespace cppy3
       result += "Traceback (most recent call last):\n";
       result += _traceback;
     }
-    result += _type_name.empty() ? _message : std::format("{}: {}", _type_name, _message);
+    result += _type_name.empty() ? _message : _type_name + ": " + _message;
     if (_cause)
     {
-      result += std::format("\n\nThe above exception was the direct cause of the following exception:\n\n{}",
-                             _cause->format());
+      result += "\n\nThe above exception was the direct cause of the following exception:\n\n" +
+                _cause->format();
     }
     return result;
   }
