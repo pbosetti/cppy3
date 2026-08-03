@@ -1,15 +1,195 @@
 #include <cppy3/interpreter.hpp>
 
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <cwchar>
 #include <deque>
 #include <fstream>
 #include <iterator>
+#include <system_error>
 
+#include <cppy3/cppy3_build_config.h>
 #include <cppy3/utils.hpp>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace cppy3
 {
   namespace
   {
+    namespace fs = std::filesystem;
+
+    // --- locating the Python installation without starting the interpreter ---
+    //
+    // These mirror the landmarks CPython's own Modules/getpath.py looks for
+    // (STDLIB_LANDMARKS and ZIP_LANDMARK) so that detect_python_home() agrees
+    // with CPython wherever CPython manages on its own, and only differs
+    // where CPython gives up.
+    bool holds_stdlib(const fs::path &dir)
+    {
+      if (dir.empty())
+        return false;
+      std::error_code ec;
+#ifdef _WIN32
+      if (fs::is_regular_file(dir / "Lib" / "os.py", ec))
+        return true;
+      // Embedded distributions ship the stdlib as pythonXY.zip beside the DLL
+      // instead of an unpacked Lib directory.
+      std::array<char, 32> zip{};
+      std::snprintf(zip.data(), zip.size(), "python%d%d.zip", PY_MAJOR_VERSION, PY_MINOR_VERSION);
+      return fs::is_regular_file(dir / zip.data(), ec);
+#else
+      std::array<char, 32> stdlibDir{};
+      std::snprintf(stdlibDir.data(), stdlibDir.size(), "python%d.%d", PY_MAJOR_VERSION, PY_MINOR_VERSION);
+      return fs::is_regular_file(dir / "lib" / stdlibDir.data() / "os.py", ec);
+#endif
+    }
+
+    // getpath.py's search_up(): walk towards the filesystem root looking for
+    // the stdlib landmark, as CPython does from its executable's directory.
+    std::optional<fs::path> search_up_for_stdlib(fs::path dir)
+    {
+      while (!dir.empty())
+      {
+        if (holds_stdlib(dir))
+          return dir;
+        fs::path parent = dir.parent_path();
+        if (parent == dir) // reached the root
+          break;
+        dir = std::move(parent);
+      }
+      return std::nullopt;
+    }
+
+#ifdef _WIN32
+    std::optional<fs::path> module_path(HMODULE module)
+    {
+      std::wstring buffer(MAX_PATH, L'\0');
+      for (;;)
+      {
+        const DWORD written = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (written == 0)
+          return std::nullopt;
+        if (written < buffer.size())
+        {
+          buffer.resize(written);
+          return fs::path(buffer);
+        }
+        if (buffer.size() > 32768) // longest path Windows will ever hand back
+          return std::nullopt;
+        buffer.resize(buffer.size() * 2);
+      }
+    }
+#endif
+
+    // Full path of the pythonXY.dll this process is actually running against
+    // -- not necessarily the one CMake found at build time, and (as observed
+    // on GitHub's windows-latest runners) not necessarily one that sits in
+    // its own installation's prefix.
+    std::optional<fs::path> libpython_path()
+    {
+#ifdef _WIN32
+      HMODULE module = nullptr;
+      // Any address inside the DLL identifies it; Py_IsInitialized is exported
+      // by every CPython build and, unlike a data symbol, is safe to take the
+      // address of before initialization.
+      if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCWSTR>(&Py_IsInitialized), &module))
+        return std::nullopt;
+      return module_path(module);
+#else
+      return std::nullopt; // POSIX gets its prefix from CPython's PREFIX macro
+#endif
+    }
+
+    // Full path of the process's own executable (CPython's real_executable).
+    std::optional<fs::path> host_executable_path()
+    {
+#ifdef _WIN32
+      return module_path(nullptr);
+#else
+      return std::nullopt;
+#endif
+    }
+
+#ifdef _WIN32
+    // HKCU\...\PythonCore\X.Y\InstallPath, the location the official Windows
+    // installer records. Consulted only after the on-disk searches, since a
+    // registry entry can outlive the installation it points at.
+    std::optional<fs::path> registry_python_home()
+    {
+      std::array<wchar_t, 96> subkey{};
+      std::swprintf(subkey.data(), subkey.size(), L"Software\\Python\\PythonCore\\%d.%d\\InstallPath",
+                    PY_MAJOR_VERSION, PY_MINOR_VERSION);
+
+      for (const HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE})
+      {
+        DWORD bytes = 0;
+        if (RegGetValueW(root, subkey.data(), nullptr, RRF_RT_REG_SZ, nullptr, nullptr, &bytes) != ERROR_SUCCESS)
+          continue;
+        std::wstring value(bytes / sizeof(wchar_t) + 1, L'\0');
+        DWORD size = static_cast<DWORD>(value.size() * sizeof(wchar_t));
+        if (RegGetValueW(root, subkey.data(), nullptr, RRF_RT_REG_SZ, nullptr, value.data(), &size) != ERROR_SUCCESS)
+          continue;
+        value.resize(std::wcslen(value.c_str())); // drop the trailing NUL(s)
+        if (!value.empty())
+          return fs::path(value);
+      }
+      return std::nullopt;
+    }
+
+    // A pythonXY._pth / <exename>._pth file beside the DLL or the executable
+    // takes total control of sys.path calculation (and implies isolated mode).
+    // Setting PyConfig::home would silently disable that, so when one is
+    // present cppy3 keeps its hands off entirely.
+    bool pth_file_present()
+    {
+      for (const auto &binary : {libpython_path(), host_executable_path()})
+      {
+        if (!binary)
+          continue;
+        fs::path pth = *binary;
+        pth.replace_extension("._pth");
+        std::error_code ec;
+        if (fs::is_regular_file(pth, ec))
+          return true;
+      }
+      return false;
+    }
+
+    // "Set" in the sense getpath.py means it: present *and* non-empty.
+    bool env_var_set(const wchar_t *name)
+    {
+      const DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
+      if (needed == 0)
+        return false;
+      std::wstring value(needed, L'\0');
+      const DWORD written = GetEnvironmentVariableW(name, value.data(), needed);
+      return written != 0;
+    }
+
+    // CPython treats a directory holding pyvenv.cfg (beside the interpreter,
+    // or one level up) as a virtual environment and reads the real
+    // installation's location out of it. That path works on Windows already,
+    // so an explicitly configured venv executable must be left alone.
+    bool is_venv_executable(const fs::path &executable)
+    {
+      const fs::path dir = executable.parent_path();
+      std::error_code ec;
+      return fs::is_regular_file(dir / "pyvenv.cfg", ec) ||
+             fs::is_regular_file(dir.parent_path() / "pyvenv.cfg", ec);
+    }
+#endif
+
     [[noreturn]] void throw_status(const PyStatus &status)
     {
       std::string msg = status.err_msg ? status.err_msg : "unknown CPython initialization error";
@@ -102,6 +282,37 @@ namespace cppy3
     }
   }
 
+  std::optional<std::filesystem::path> detect_python_home()
+  {
+    // 1. Beside (or above) the pythonXY.dll actually loaded into this
+    //    process. This is CPython's own first choice, and normally succeeds.
+    if (const auto library = libpython_path())
+      if (auto home = search_up_for_stdlib(library->parent_path()))
+        return home;
+
+    // 2. Beside (or above) this process's executable, for applications that
+    //    ship a private copy of the stdlib next to their binary.
+    if (const auto executable = host_executable_path())
+      if (auto home = search_up_for_stdlib(executable->parent_path()))
+        return home;
+
+    // 3. The installation this build of cppy3 links against, recorded at
+    //    configure time -- the stand-in for the PREFIX macro CPython bakes
+    //    into POSIX builds and getpath.py falls back to there. Validated
+    //    rather than trusted, since the build machine's layout need not
+    //    survive to the machine that runs the binary.
+    if (const fs::path built(CPPY3_BUILD_PYTHON_HOME); holds_stdlib(built))
+      return built;
+
+#ifdef _WIN32
+    // 4. Whatever the official installer registered for this exact X.Y.
+    if (const auto registered = registry_python_home(); registered && holds_stdlib(*registered))
+      return registered;
+#endif
+
+    return std::nullopt;
+  }
+
   Var Namespace::exec(std::string_view code, std::string_view filename) const
   {
     Var codeObj = Var::steal(Py_CompileString(std::string(code).c_str(), std::string(filename).c_str(), Py_file_input));
@@ -187,9 +398,47 @@ namespace cppy3
     pyConfig.write_bytecode = config.write_bytecode ? 1 : 0;
     pyConfig.install_signal_handlers = config.install_signal_handlers ? 1 : 0;
 
-    if (config.home)
+    std::optional<std::filesystem::path> home = config.home;
+#ifdef _WIN32
+    // Windows has no compile-time PREFIX for getpath.py to fall back on, so
+    // when its searches come up empty it does not fail loudly -- it warns
+    // ("Could not find platform independent libraries <prefix>"), sets prefix
+    // to the current working directory and carries on until the very next
+    // step dies with "Failed to import encodings module". Those searches
+    // start from the loaded pythonXY.dll and from this process's executable,
+    // which for an embedding application is neither python.exe nor anywhere
+    // near the stdlib; whether they find anything is a property of how the
+    // host happens to have laid Python out, and on GitHub's windows-latest
+    // runners they do not. POSIX embedders never see this because CPython
+    // hardcodes its own install prefix at build time and getpath.py falls
+    // back to it, so supply the equivalent here and let Windows behave the
+    // same way.
+    //
+    // Only ever a fallback: an explicitly configured home, PYTHONHOME, a
+    // ._pth file or a venv all still take precedence, and in the common case
+    // where CPython's own detection works, detect_python_home() returns the
+    // very directory CPython would have found anyway.
+    if (!home && !pth_file_present() && (config.isolated || !env_var_set(L"PYTHONHOME")))
     {
-      status = PyConfig_SetString(&pyConfig, &pyConfig.home, config.home->wstring().c_str());
+      if (config.executable)
+      {
+        // A configured executable that is not a venv launcher does not steer
+        // prefix detection on Windows the way it does on POSIX: getpath.py
+        // derives the directory it searches from real_executable (this
+        // process's own binary), not from PyConfig::executable. Search from
+        // it explicitly so that documented escape hatch actually works.
+        if (!is_venv_executable(*config.executable))
+          home = search_up_for_stdlib(config.executable->parent_path());
+      }
+      else
+      {
+        home = detect_python_home();
+      }
+    }
+#endif
+    if (home)
+    {
+      status = PyConfig_SetString(&pyConfig, &pyConfig.home, home->wstring().c_str());
       if (PyStatus_Exception(status))
       {
         PyConfig_Clear(&pyConfig);

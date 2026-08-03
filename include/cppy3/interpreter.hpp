@@ -77,12 +77,10 @@ namespace cppy3
   {
     // PYTHONHOME equivalent: the prefix of the Python installation/venv to
     // embed. Leave unset to use the interpreter this program was linked
-    // against. On Windows, CPython's own auto-detection (from this
-    // process's executable path) has been observed to fail to find the
-    // stdlib in at least one environment -- if Interpreter's constructor
-    // throws "Failed to import encodings module", set this (or
-    // `executable` below) explicitly rather than relying on auto-detect;
-    // see README's Known limitations.
+    // against -- on Windows, where CPython's own auto-detection can come up
+    // empty for a host binary that is not python.exe, cppy3 falls back to
+    // detect_python_home() (below) rather than failing with "Failed to
+    // import encodings module".
     std::optional<std::filesystem::path> home;
 
     // sys.executable. Leave unset to let CPython calculate it.
@@ -165,6 +163,23 @@ namespace cppy3
     void set_stdout_hook(std::function<void(std::string_view)> hook) const;
     void set_stderr_hook(std::function<void(std::string_view)> hook) const;
   };
+
+  // Best-effort location of the Python installation prefix (the directory
+  // whose Lib/ holds the standard library), determined without starting the
+  // interpreter. Tried in order: the directory of the pythonXY library
+  // loaded into this process, this process's own executable directory, the
+  // installation cppy3 was built against, and -- on Windows -- the X.Y
+  // install path recorded in the registry. Each candidate is searched
+  // towards the filesystem root for CPython's own stdlib landmarks, and
+  // returned only if one is found; std::nullopt means none of them held a
+  // usable standard library.
+  //
+  // Interpreter calls this on Windows when Config::home is unset, since
+  // CPython's equivalent search has no compile-time prefix to fall back on
+  // there. Exposed because embedders that need the answer for their own
+  // reasons (bundling, diagnostics, spawning a matching python.exe) would
+  // otherwise have to reimplement it.
+  [[nodiscard]] LIB_API std::optional<std::filesystem::path> detect_python_home();
 
   // True if the interpreter is running and a Python exception is currently
   // set (but not yet fetched/thrown). Mostly useful in tests and to check

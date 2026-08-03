@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -518,5 +519,59 @@ TEST_CASE("cppy3::Interpreter / Namespace features", "interpreter") {
     REQUIRE(ns.eval("sys.argv[0]").str() == "cppy3_test");
     REQUIRE(ns.eval("sys.argv[1]").str() == "--flag");
     REQUIRE(ns.eval("sys.argv[2]").str() == "value");
+  }
+}
+
+TEST_CASE("locating the Python installation", "interpreter") {
+  // Regression coverage for the Windows zero-config failure: CPython's
+  // getpath.py searches for the stdlib from the loaded pythonXY.dll and from
+  // the host executable, and on Windows -- unlike POSIX, where it falls back
+  // to the PREFIX baked into CPython itself -- has nothing to fall back on
+  // when neither search hits. Embedding from a binary that is not python.exe
+  // and whose DLL does not sit in its own installation used to warn "Could
+  // not find platform independent libraries <prefix>", set sys.prefix to the
+  // working directory and then die with "Failed to import encodings module".
+  SECTION("detect_python_home() finds a prefix that really holds the stdlib") {
+    const std::optional<std::filesystem::path> home = cppy3::detect_python_home();
+
+#ifdef _WIN32
+    // Windows always needs an answer: it is what Interpreter falls back to.
+    REQUIRE(home.has_value());
+#endif
+
+    if (home) {
+      REQUIRE(std::filesystem::is_directory(*home));
+      const bool hasStdlib =
+          std::filesystem::is_regular_file(*home / "Lib" / "os.py") ||
+          std::filesystem::is_regular_file(*home / "lib" /
+                                           ("python" + std::to_string(PY_MAJOR_VERSION) + "." +
+                                            std::to_string(PY_MINOR_VERSION)) / "os.py");
+      REQUIRE(hasStdlib);
+    }
+  }
+
+  SECTION("a zero-config interpreter resolves its own standard library") {
+    cppy3::Interpreter interp;
+    cppy3::Namespace ns = interp.main();
+    ns.exec("import os, sys");
+
+    // The stdlib must have been found *through* the calculated prefix, not
+    // in spite of it. Under the old behaviour sys.base_prefix was the
+    // process's working directory while os.py came from somewhere else
+    // entirely (on the one environment where startup survived at all).
+    ns.exec("stdlib = os.path.normcase(os.path.realpath(os.path.dirname(os.__file__)))");
+    ns.exec("base = os.path.normcase(os.path.realpath(sys.base_prefix))");
+    REQUIRE(ns.eval("stdlib.startswith(base)").to<bool>());
+
+#ifdef _WIN32
+    // ...and that prefix is the one cppy3 handed to CPython -- unless the
+    // ambient PYTHONHOME overrode it, which cppy3 deliberately leaves alone.
+    // equivalent() compares by file identity, so slash and case differences
+    // between the two spellings do not matter.
+    if (std::getenv("PYTHONHOME") == nullptr) {
+      REQUIRE(std::filesystem::equivalent(*cppy3::detect_python_home(),
+                                          std::filesystem::path(ns.get<std::string>("base"))));
+    }
+#endif
   }
 }

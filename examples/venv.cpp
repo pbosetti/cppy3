@@ -30,7 +30,13 @@ int main(int argc, char *argv[])
   }
 
   cppy3::Config config;
+  // A venv's launcher lives in Scripts\python.exe on Windows and
+  // bin/python3 everywhere else.
+#ifdef _WIN32
+  config.executable = std::filesystem::path(argv[1]) / "Scripts" / "python.exe";
+#else
   config.executable = std::filesystem::path(argv[1]) / "bin" / "python3";
+#endif
 
   cppy3::Interpreter interpreter(config);
   cppy3::Namespace ns = interpreter.main();
